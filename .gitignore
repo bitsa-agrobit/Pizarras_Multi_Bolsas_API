@@ -1,0 +1,35 @@
+# Python / FastAPI
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+.env
+.env.*
+*.sqlite3
+
+# Playwright / scraping artifacts
+playwright/.cache/
+playwright/.downloads/
+data/out/
+data/logs/
+*.png
+*.html
+
+# Docker
+*.local.yml
+*.env.docker
+# evita subir imágenes locales pesadas
+*.tar
+
+# Node (si agregamos dashboard React)
+node_modules/
+dist/
+.build/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

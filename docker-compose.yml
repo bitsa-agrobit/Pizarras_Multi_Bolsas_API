@@ -1,0 +1,12 @@
+services:
+  api:
+    build: .
+    container_name: pizarras_multi_bolsas-api
+    ports:
+      - "8001:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./app:/app/app:rw
+      - ./templates:/app/templates:rw
+      - ./data:/app/data:rw
