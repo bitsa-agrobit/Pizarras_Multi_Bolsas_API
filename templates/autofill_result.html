@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"><title>Resultado</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body{font-family:system-ui,Arial;margin:24px}
+    .alert{background:#eef2ff;border:1px solid #c7d2fe;padding:12px;border-radius:8px;margin-bottom:12px}
+    table{border-collapse:collapse;width:100%;margin-top:12px}
+    th,td{border:1px solid #e5e7eb;padding:8px;text-align:left}
+    th{background:#f9fafb}
+    a.btn{display:inline-block;padding:8px 12px;border:1px solid #111;border-radius:8px;color:#111;text-decoration:none}
+  </style>
+</head>
+<body>
+  <h3>Resultado — Fecha: {{ fecha }}</h3>
+
+  {% if messages and messages|length > 0 %}
+  <div class="alert">
+    {% for m in messages %}<div>{{ m }}</div>{% endfor %}
+  </div>
+  {% endif %}
+
+  {% if rows and rows|length > 0 %}
+  <table>
+    <thead><tr><th>fecha</th><th>producto</th><th>precio</th><th>fuente</th></tr></thead>
+    <tbody>
+      {% for r in rows %}
+      <tr><td>{{ r.fecha }}</td><td>{{ r.producto }}</td><td>{{ r.precio }}</td><td>{{ r.fuente }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No hay datos para mostrar.</p>
+  {% endif %}
+
+  <p><a class="btn" href="/ui/autofill">← Volver</a></p>
+</body>
+</html>

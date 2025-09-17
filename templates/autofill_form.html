@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"><title>Cotizaciones – Multi Bolsas</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body{font-family:system-ui,Arial;margin:24px}
+    .alert{background:#eef2ff;border:1px solid #c7d2fe;padding:12px;border-radius:8px;margin-bottom:12px}
+    label{display:block;margin:8px 0 4px}
+    input[type="text"]{padding:8px;border:1px solid #cfd4dc;border-radius:8px;width:220px}
+    button{padding:10px 14px;border:0;border-radius:8px;background:#111;color:#fff;cursor:pointer}
+  </style>
+</head>
+<body>
+  <h2>Obtener cotizaciones públicas</h2>
+
+  {% if errors and errors|length > 0 %}
+  <div class="alert">
+    {% for e in errors %}<div>{{ e }}</div>{% endfor %}
+  </div>
+  {% endif %}
+
+  <form action="/ui/autofill/submit" method="post">
+    <label for="fecha">Fecha (dd/mm/aaaa)</label>
+    <input id="fecha" name="fecha" type="text" value="{{ fecha or '' }}" placeholder="dd/mm/aaaa">
+
+    <div style="margin:12px 0">
+      <label><input type="checkbox" name="bcr_locales" value="1" {% if "bcr_locales" in (sources or []) %}checked{% endif %}> BCR – Cotizaciones locales</label>
+      <label><input type="checkbox" name="bdec_bsas" value="1" {% if "bdec_bsas" in (sources or []) %}checked{% endif %}> Bolsa de Cereales de Buenos Aires</label>
+      <label><input type="checkbox" name="bcp_bahia" value="1" {% if "bcp_bahia" in (sources or []) %}checked{% endif %}> Bolsa de Cereales de Bahía Blanca</label>
+    </div>
+
+    <button type="submit">Obtener y guardar</button>
+  </form>
+</body>
+</html>

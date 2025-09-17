@@ -1,154 +1,139 @@
-from fastapi import FastAPI, Request, Form
-from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
-from pathlib import Path
-import csv
-from datetime import datetime
-import pandas as pd
+from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
+from playwright.async_api import async_playwright
+import csv, io, datetime as dt
+from typing import Literal
 
-from .config import DATA_DIR
-from .scrapers import run_selected
+DEFAULT_URL = "https://www.bolsadecereales.com/camara-arbitral"
 
 app = FastAPI()
-templates = Jinja2Templates(directory="templates")
-
-# Habilitar CORS para el front en Vite (5173)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=True,
+    allow_origins=["http://localhost:5173"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-DATA_DIR = Path("data/out")
-
-def _latest_csv() -> Path | None:
-    # 1) Prioriza la carpeta del día (YYYY-MM-DD) si existe
-    today = datetime.today().strftime("%Y-%m-%d")
-    p_today = DATA_DIR / today / "pizarra_normalizada.csv"
-    if p_today.exists():
-        return p_today
-
-    # 2) Si no hay del día, toma el archivo más reciente que encuentre
-    candidates = list(DATA_DIR.glob("*/pizarra_normalizada.csv"))
-    if not candidates:
+def _to_float_or_none(txt: str):
+    if not txt or txt.lower().strip() == "s/c":
         return None
-    return max(candidates, key=lambda p: p.stat().st_mtime)
+    t = txt.strip().replace(".", "").replace(",", ".")
+    try:
+        return float(t)
+    except:
+        return None
+
+async def _scrape_items(url: str):
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        ctx = await browser.new_context(user_agent="Mozilla/5.0")
+        page = await ctx.new_page()
+        await page.goto(url, wait_until="networkidle")
+
+        rows = await page.locator("table.tabla-cotizaciones.half tbody tr").all()
+
+        items = []
+        current_currency = None  # "ARS" o "USD"
+
+        for r in rows:
+            tds = await r.locator("td").all_inner_texts()
+            tds = [t.replace("\n", " ").strip() for t in tds]
+            if not tds:
+                continue
+
+            joined = " ".join(tds).upper()
+            if "PRODUCTO" in joined and ("PESOS/TN" in joined or "DÓLARES/TN" in joined or "DOLARES/TN" in joined):
+                current_currency = "ARS" if "PESOS/TN" in joined else "USD"
+                continue
+            if "ANTERIOR" in joined and "VAR" in joined and len(tds) <= 3:
+                continue
+            if tds[0].upper() in ("PRODUCTO", "ANTERIOR", "VAR", "ACTUAL"):
+                continue
+
+            producto = tds[0].strip()
+            actual   = tds[2].strip() if len(tds) > 2 else ""
+            anterior = tds[3].strip() if len(tds) > 3 else ""
+            variacion= tds[4].strip() if len(tds) > 4 else ""
+            precio = _to_float_or_none(actual)
+
+            # limpiar filas vacías/encabezados
+            if not producto or producto.upper() in ("PRODUCTO","ANTERIOR","VAR","ACTUAL"):
+                continue
+
+            items.append({
+                "producto": producto,
+                "precio": precio,
+                "moneda": current_currency or "USD",
+                "anterior": anterior,
+                "variacion": variacion
+            })
+
+        await browser.close()
+
+        # dedup por (producto, moneda)
+        dedup = {}
+        for it in items:
+            dedup[(it["producto"], it["moneda"])] = it
+        return list(dedup.values())
+
+@app.get("/api/health")
+def health():
+    return {"status": "ok"}
 
 @app.get("/api/cotizaciones")
-def api_cotizaciones():
-    """
-    Devuelve un JSON con la tabla normalizada:
-    [{fecha, producto, precio, fuente}, ...]
-    """
-    csv_path = _latest_csv()
-    if not csv_path:
-        return JSONResponse({"items": [], "message": "No hay CSV normalizado"}, status_code=200)
-
-    items = []
-    with csv_path.open(newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            # normalizar tipos
-            try:
-                precio = float(str(row.get("precio", "0")).replace(".", "").replace(",", "."))
-            except Exception:
-                precio = None
-            items.append({
-                "fecha": row.get("fecha"),
-                "producto": row.get("producto"),
-                "precio": precio,
-                "fuente": row.get("fuente"),
-            })
-    return {"items": items, "source": str(csv_path)}
-
-@app.post("/api/scrape")
-def api_scrape():
-    """
-    Opción mínima: reusar tu flujo existente que genera el CSV (playwright/bs4).
-    Si ya tenés una función utilitaria, llamala acá.
-    """
-    # TODO: Importar y ejecutar tu rutina existente:
-    # from app.scrapers import run_selected
-    # run_selected(fecha_iso=..., sources=[...])
-    return {"ok": True, "message": "Scraping lanzado (stub)."}
+async def cotizaciones(url: str = Query(DEFAULT_URL)):
+    try:
+        items = await _scrape_items(url)
+        return {"items": items}
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        # 200 con debug para que el front no pinte error rojo
+        return JSONResponse(status_code=200, content={"items": [], "debug": f"playwright_failed: {e}"})
 
 @app.get("/api/csv")
-def api_csv():
-    """
-    Devuelve el CSV más reciente (para 'Descargar CSV' en el front).
-    """
-    csv_path = _latest_csv()
-    if not csv_path:
-        return JSONResponse({"message": "No hay CSV para descargar"}, status_code=404)
-    return FileResponse(csv_path, media_type="text/csv", filename=csv_path.name)
-
-@app.post("/api/export/oracle")
-def api_export_oracle():
-    """
-    Dejá este stub y lo conectamos a tu inserción en Oracle.
-    """
-    # TODO: Llamar tu módulo de export a Oracle
-    return {"ok": True, "message": "Export a Oracle (stub)"}
-
-#Hasta aquí llega la parte del cíodigo nuevo para que tome las cotizaciones desde la API
-
-#Parte del código anterior
-@app.get("/health")
-def health():
-    return {"ok": True}
-
-@app.get("/ui/autofill", response_class=HTMLResponse)
-def autofill_form(request: Request):
-    ctx = {"request": request, "errors": [], "fecha": datetime.today().strftime("%d/%m/%Y"),
-           "sources":["bcr_locales","bdec_bsas","bcp_bahia"]}
-    return templates.TemplateResponse("autofill_form.html", ctx)
-
-@app.post("/ui/autofill/submit", response_class=HTMLResponse)
-def autofill_submit(
-    request: Request,
-    fecha: str = Form(...),
-    bcr_locales: str | None = Form(None),
-    bdec_bsas: str | None = Form(None),
-    bcp_bahia: str | None = Form(None),
+async def export_csv(
+    url: str = Query(DEFAULT_URL),
+    sc: Literal["sc", "blank", "null"] = "blank"   # cómo escribir precios sin cotización
 ):
-    messages, rows = [], []
-
-    # normalizar fecha del form a ISO
-    fecha_iso = None
     try:
-        dt = datetime.strptime(fecha, "%d/%m/%Y")
-        fecha_iso = dt.strftime("%Y-%m-%d")
-        fecha = dt.strftime("%d/%m/%Y")
-    except Exception:
-        try:
-            dt = datetime.strptime(fecha, "%Y-%m-%d")
-            fecha_iso = dt.strftime("%Y-%m-%d")
-            fecha = dt.strftime("%d/%m/%Y")
-        except Exception:
-            messages.append("Fecha inválida. Usá dd/mm/aaaa.")
+        items = await _scrape_items(url)
 
-    selected = []
-    if bcr_locales: selected.append("bcr_locales")
-    if bdec_bsas:   selected.append("bdec_bsas")
-    if bcp_bahia:   selected.append("bcp_bahia")
+        buf = io.StringIO(newline="")
+        w = csv.writer(buf)
+        w.writerow(["producto","precio","moneda","anterior","variacion","timestamp"])
+        now = dt.datetime.now().isoformat(timespec="seconds")
 
-    if not selected:
-        messages.append("Seleccioná al menos una fuente.")
+        for it in items:
+            precio = it.get("precio")
+            # representación elegida para “sin cotización”
+            if precio is None:
+                if sc == "sc":
+                    precio_out = "s/c"
+                elif sc == "null":
+                    precio_out = "NULL"
+                else:  # "blank"
+                    precio_out = ""
+            else:
+                precio_out = precio  # número
 
-    df = pd.DataFrame()
-    if fecha_iso and selected:
-        df = run_selected(selected, fecha_iso=fecha_iso)
+            w.writerow([
+                it.get("producto",""),
+                precio_out,
+                it.get("moneda",""),
+                it.get("anterior",""),
+                it.get("variacion",""),
+                now
+            ])
 
-    if df is None or df.empty:
-        messages.append("No se obtuvieron datos de las fuentes seleccionadas.")
-    else:
-        # guardar CSV “del día”
-        out_dir = Path(DATA_DIR) / "out" / fecha_iso
-        out_dir.mkdir(parents=True, exist_ok=True)
-        df.to_csv(out_dir / "pizarra_multi_bolsas.csv", index=False)
-        rows = df.to_dict(orient="records")
+        csv_text = buf.getvalue()
+        buf.close()
 
-    ctx = {"request": request, "fecha": fecha, "rows": rows, "messages": messages}
-    return templates.TemplateResponse("autofill_result.html", ctx)
+        return Response(
+            content=csv_text,
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="cotizaciones.csv"'}
+        )
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return JSONResponse(status_code=500, content={"error": str(e)})
