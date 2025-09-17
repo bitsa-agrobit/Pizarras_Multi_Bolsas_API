@@ -1,35 +1,21 @@
-# Python / FastAPI
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
-*.egg-info/
+*.sqlite
+*.db
 .venv/
+venv/
 .env
-.env.*
-*.sqlite3
 
-# Playwright / scraping artifacts
-playwright/.cache/
-playwright/.downloads/
-data/out/
-data/logs/
-*.png
-*.html
-
-# Docker
-*.local.yml
-*.env.docker
-# evita subir imágenes locales pesadas
-*.tar
-
-# Node (si agregamos dashboard React)
+# Node/Vite (si tenés frontend en el repo)
 node_modules/
 dist/
-.build/
 
-# IDE / OS
-.vscode/
-.idea/
+# Playwright
+playwright/.cache/
+
+# macOS
 .DS_Store
-Thumbs.db
+
