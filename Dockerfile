@@ -50,6 +50,9 @@ COPY app/ /app/
 # Puerto interno de la API
 EXPOSE 8000
 
+# Escucha en $PORT si está seteado por Render, o 8000 localmente
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+
 # Variables de entorno (ajustalas en producción / compose / App Service)
 # ENV ORACLE_DSN=host:1521/servicio
 # ENV ORACLE_USER=usuario
