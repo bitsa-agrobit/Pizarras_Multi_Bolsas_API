@@ -2,6 +2,12 @@ services:
   api:
     build: .
     container_name: pizarras_multi_bolsas-api
+    environment:
+      ORACLE_CLIENT_LIB_DIR: "/oracle/instantclient"
+      LD_LIBRARY_PATH: "/oracle/instantclient"
+      ORACLE_DSN: "10.15.0.50:1521/BITSOFT"
+      ORACLE_USER: "TEST_EMAN"
+      ORACLE_PASS: "bitss79"
     ports:
       - "8001:8000"
     env_file:
@@ -10,3 +16,4 @@ services:
       - ./app:/app/app:rw
       - ./templates:/app/templates:rw
       - ./data:/app/data:rw
+      - ./oracle/instantclient:/oracle/instantclient

@@ -1,0 +1,10 @@
+producto,precio,moneda,anterior,variacion
+Trigo,266000.00,ARS,262000,1.53
+Trigo,200.00,USD,s/c,s/c
+Maiz,246780.00,ARS,242000,1.98
+Maiz,180.00,USD,s/c,s/c
+Soja,480000.00,ARS,475000,1.05
+Soja,345.00,USD,s/c,s/c
+Girasol,,ARS,s/c,s/c
+Girasol,300.00,USD,300,0.00
+Sorgo,233070.00,ARS,230000,1.33

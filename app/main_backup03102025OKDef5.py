@@ -4,17 +4,14 @@
 #   - GET  /api/health
 #   - GET  /api/cotizaciones?plaza=rosario|bahia|cordoba|quequen|darsena|locales&only_base=1
 #   - POST /api/start?plaza=<plaza>&interval_min=<min>        (inicia scheduler en memoria)
-#   - POST /api/export/oracle?plaza=<plaza>                   (inserta <ORACLE_SCHEMA>.TB_REF)
+#   - POST /api/export/oracle?plaza=<plaza>                   (inserta TEST_EMAN.TB_REF)
 #   - GET  /api/csv?plaza=<plaza>&only_base=1                 (descarga CSV)
-#   - GET  /api/powerbi/cotizaciones?plaza=<plaza>&only_base=1  (JSON para Power BI)
 #
-# Cambios "quirúrgicos" (esta versión):
+# Cambios "quirúrgicos":
 # - Exportación Oracle: mapeo de granos a códigos reales Oracle (10,200,210,220,230).
-# - Validación previa contra <ORACLE_SCHEMA>.GRANO (si el código no existe, se omite).
+# - Validación previa contra TEST_EMAN.GRANO (si el código no existe, se omite).
 # - UVALUE: hash <= 16 dígitos (evita ORA-01438).
-# - Conteo de "already_present" (no inserta por existir) usando rowcount del MERGE.
-# - Endpoint /api/powerbi/cotizaciones (JSON simple, apto Power BI).
-# - Sin cambios en scraping/normalizaciones existentes.
+# - Conserva normalizaciones/HTML parsing existentes.
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,7 +27,6 @@ import io
 import csv
 import os
 import hashlib
-from datetime import datetime
 
 APP_TITLE = "Pizarras Granos API"
 SOURCE_URL = "https://www.bolsadecereales.com/camara-arbitral"
@@ -402,13 +398,13 @@ def csv_cotizaciones(
     )
 
 # ---------------------------
-# Exportación ORACLE (<ORACLE_SCHEMA>.TB_REF)
+# Exportación ORACLE (TEST_EMAN.TB_REF)
 # ---------------------------
 
-# Mapa de productos → códigos Oracle en GRANO
+# Mapa de productos → códigos Oracle en TEST_EMAN.GRANO
 _GRAIN_MAP = {
     "Trigo": 10,
-    "Trigo Art 12": 10,  # mapea al Trigo estándar
+    "Trigo Art 12": 10,  # se mapea al Trigo estándar
     "Maiz": 200,
     "Soja": 210,
     "Sorgo": 220,
@@ -426,7 +422,7 @@ def _oracle_connect():
         else:
             oracledb.init_oracle_client()  # thick si IC está en el contenedor
     except Exception:
-        # fallback a thin si no hay IC
+        # cae a thin si no hay IC; está bien como fallback
         pass
     host = os.environ.get("ORACLE_HOST")
     port = int(os.environ.get("ORACLE_PORT", "1521"))
@@ -457,9 +453,8 @@ def _schema() -> str:
     return os.environ.get("ORACLE_SCHEMA", "TEST_EMAN").strip()
 
 def _grain_exists(conn, grano_code: int) -> bool:
-    # Compatible con versiones antiguas: usar ROWNUM en lugar de FETCH FIRST
     cur = conn.cursor()
-    cur.execute(f"SELECT 1 FROM {_schema()}.GRANO WHERE GRANO = :g AND ROWNUM = 1", {"g": grano_code})
+    cur.execute(f"SELECT 1 FROM {_schema()}.GRANO WHERE GRANO = :g FETCH FIRST 1 ROWS ONLY", {"g": grano_code})
     return cur.fetchone() is not None
 
 @app.post("/api/export/oracle")
@@ -467,6 +462,8 @@ def export_oracle(
     plaza: str = Query("rosario"),
     only_base: int = Query(1)
 ):
+    from datetime import datetime
+
     plaza_norm, _ = normalize_plaza(plaza)
     payload = cotizaciones(plaza_norm, only_base)
     items = payload.get("items", [])
@@ -475,7 +472,7 @@ def export_oracle(
     if not rows:
         return JSONResponse({"ok": False, "error": "sin_datos"}, status_code=400)
 
-    # Valores compatibles con TB_REF
+    # Valores fijos compatibles con definición de TB_REF
     siglo = 21                             # NUMBER(3)
     cosecha = "0"                          # VARCHAR2(5) placeholder
     pizarra = _PIZARRA_MAP.get(plaza_norm, "UNK")
@@ -485,7 +482,6 @@ def export_oracle(
 
     inserted = 0
     skipped = 0
-    already_present = 0
     conn = None
     try:
         conn = _oracle_connect()
@@ -495,9 +491,11 @@ def export_oracle(
             prod = it.get("producto")
             grano = _GRAIN_MAP.get(prod, 0)
             if grano == 0:
+                # Producto no mapeado → se omite
                 skipped += 1
                 continue
 
+            # Validar que el código exista en TEST_EMAN.GRANO
             if not _grain_exists(conn, grano):
                 skipped += 1
                 continue
@@ -507,7 +505,7 @@ def export_oracle(
 
             uvalue = _uvalue16(grano, siglo, cosecha, pizarra, fechavig, mes, ejercicio, precioref)
 
-            # MERGE idempotente por UVALUE (PK). rowcount=1 → se insertó; 0 → ya existía.
+            # Idempotente por UVALUE (PK)
             cur.execute(f"""
                 MERGE INTO {_schema()}.TB_REF t
                 USING (SELECT :grano AS grano,
@@ -535,20 +533,10 @@ def export_oracle(
                 "precioref": precioref,
                 "uvalue": uvalue,
             })
-
-            if cur.rowcount and cur.rowcount > 0:
-                inserted += 1
-            else:
-                already_present += 1
+            inserted += 1
 
         conn.commit()
-        return {
-            "ok": True,
-            "exported": inserted,
-            "already": already_present,
-            "skipped": skipped,
-            "plaza": plaza_norm
-        }
+        return {"ok": True, "exported": inserted, "skipped": skipped, "plaza": plaza_norm}
     except Exception as ex:
         return JSONResponse({"ok": False, "error": f"{type(ex).__name__}: {ex}"}, status_code=500)
     finally:
@@ -556,37 +544,6 @@ def export_oracle(
             if conn: conn.close()
         except Exception:
             pass
-
-# ---------------------------
-# Power BI (JSON simple)
-# ---------------------------
-
-@app.get("/api/powerbi/cotizaciones")
-def powerbi_cotizaciones(
-    plaza: str = Query("rosario"),
-    only_base: int = Query(1)
-):
-    """Salida JSON plana apta para Power BI (Get Data → Web)."""
-    plaza_norm, _ = normalize_plaza(plaza)
-    payload = cotizaciones(plaza_norm, only_base)
-    items = payload.get("items", [])
-
-    now_iso = datetime.utcnow().isoformat() + "Z"
-    fechavig = int(datetime.utcnow().strftime("%Y%m%d"))
-
-    data = []
-    for it in items:
-        data.append({
-            "plaza": plaza_norm,
-            "producto": it.get("producto"),
-            "moneda": it.get("moneda"),
-            "precio": it.get("precio"),
-            "fechavig": fechavig,
-            "ts_iso": now_iso,
-            "fuente": SOURCE_URL,
-        })
-    return {"ok": True, "count": len(data), "items": data, "plaza": plaza_norm}
-    
 
 # ---------------------------
 # Main

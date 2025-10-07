@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useState } from "react";
 /** === Helpers === */
 const API = ""; // usar proxy Vite → /api
 
-// Normalización de plaza con variantes y acentos (NO TOCAR: quedó OK)
+// Normalización de plaza con variantes y acentos
 const normalizePlaza = (p) => {
   if (!p) return "rosario";
   const s = ("" + p).toLowerCase();
@@ -46,32 +46,6 @@ const dedupeByProducto = (items) => {
   return Array.from(map.values());
 };
 
-/** Toast simple (no cambia estilos globales) */
-function Toast({ show, kind = "info", title, message, onClose }) {
-  if (!show) return null;
-  const colors = {
-    success: "bg-emerald-600",
-    error: "bg-rose-600",
-    info: "bg-slate-800",
-    warning: "bg-amber-600",
-  };
-  return (
-    <div className="fixed bottom-5 right-5 z-50 max-w-sm">
-      <div className={`text-white rounded-xl shadow-lg px-4 py-3 ${colors[kind] || colors.info}`}>
-        <div className="font-semibold">{title}</div>
-        {message && <div className="text-sm opacity-90 mt-0.5">{message}</div>}
-        <button
-          className="mt-2 inline-flex rounded-md border border-white/30 px-3 py-1 text-xs hover:bg-white/10"
-          onClick={onClose}
-          title="Cerrar"
-        >
-          Cerrar
-        </button>
-      </div>
-    </div>
-  );
-}
-
 export default function DashboardAgricola() {
   // Filtros/estado
   const [plaza, setPlaza] = useState("rosario");
@@ -85,15 +59,6 @@ export default function DashboardAgricola() {
   const [intervalMin, setIntervalMin] = useState(1440);
   const [infoUrl, setInfoUrl] = useState("https://www.bolsadecereales.com/camara-arbitral");
   const [loading, setLoading] = useState(false);
-
-  // Toast state
-  const [toast, setToast] = useState({ show: false, kind: "info", title: "", message: "" });
-  const showToast = (kind, title, message) => {
-    setToast({ show: true, kind, title, message });
-    // auto-hide a los 4.5s
-    window.clearTimeout(showToast._t);
-    showToast._t = window.setTimeout(() => setToast((t) => ({ ...t, show: false })), 4500);
-  };
 
   const fetchData = async (pz = plaza, t = tab) => {
     setLoading(true);
@@ -120,7 +85,6 @@ export default function DashboardAgricola() {
     } catch (e) {
       console.error(e);
       setRows([]);
-      showToast("error", "Error al cargar", "No se pudieron obtener las cotizaciones.");
     } finally {
       setLoading(false);
     }
@@ -165,56 +129,19 @@ export default function DashboardAgricola() {
         { method: "POST" }
       );
       const js = await res.json();
-      if (js?.ok) {
-        showToast(
-          "success",
-          "Automatización iniciada",
-          `Plaza ${normalizePlaza(plaza)} · cada ${intervalMin} min`
-        );
-      } else {
-        showToast("error", "No se pudo iniciar", js?.message || "Error desconocido");
-      }
+      alert(js?.ok ? "Éxito: Automatización iniciada" : `Error: ${js?.message || "desconocido"}`);
     } catch {
-      showToast("error", "No se pudo iniciar", "Error de red");
+      alert("Error de red al iniciar");
     }
   };
 
   const onExportOracle = async () => {
     try {
-      const res = await fetch(
-        `${API}/api/export/oracle?plaza=${encodeURIComponent(normalizePlaza(plaza))}`,
-        { method: "POST" }
-      );
+      const res = await fetch(`${API}/api/export/oracle?plaza=${encodeURIComponent(normalizePlaza(plaza))}`, { method: "POST" });
       const js = await res.json();
-      if (js?.ok) {
-        const exp = js.exported ?? 0;
-        const exist = js.already ?? 0;
-        const skip = js.skipped ?? 0;
-
-        if (exp > 0) {
-          showToast(
-            "success",
-            "Exportación a Oracle OK",
-            `Insertadas ${exp} · Ya existentes ${exist} · Omitidas ${skip}`
-          );
-        } else if (exist > 0 && exp === 0) {
-          showToast(
-            "info",
-            "Sin cambios",
-            `Los ${exist} registros ya estaban insertados (omitidos ${skip}).`
-          );
-        } else {
-          showToast(
-            "warning",
-            "Sin datos",
-            "No había registros válidos para exportar."
-          );
-        }
-      } else {
-        showToast("error", "Exportación fallida", js?.error || "Error desconocido");
-      }
+      alert(js?.ok ? `Éxito: exportadas ${js.exported} filas` : `Error: ${js?.error || "desconocido"}`);
     } catch {
-      showToast("error", "Exportación fallida", "Error de red");
+      alert("Error de red al exportar");
     }
   };
 
@@ -232,9 +159,8 @@ export default function DashboardAgricola() {
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      showToast("success", "CSV descargado", `cotizaciones_${normalizePlaza(plaza)}.csv`);
     } catch {
-      showToast("error", "No se pudo descargar el CSV", "Intentalo nuevamente.");
+      alert("No se pudo descargar el CSV");
     }
   };
 
@@ -248,22 +174,9 @@ export default function DashboardAgricola() {
           second: "2-digit",
         }).format(lastUpdated);
 
-  // URL Power BI (JSON)
-  const powerBiUrl = `${API}/api/powerbi/cotizaciones?plaza=${encodeURIComponent(
-    normalizePlaza(plaza)
-  )}&only_base=${tab === "base" ? 1 : 0}`;
-
   /** === Render === */
   return (
     <div className="mx-auto max-w-7xl px-4 py-6">
-      <Toast
-        show={toast.show}
-        kind={toast.kind}
-        title={toast.title}
-        message={toast.message}
-        onClose={() => setToast((t) => ({ ...t, show: false }))}
-      />
-
       {/* KPIs */}
       <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
         <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -421,9 +334,7 @@ export default function DashboardAgricola() {
             {/* Plaza */}
             <div className="mb-4">
               <div className="mb-1 text-sm text-slate-600">Plaza</div>
-
-              {/* Contenedor alineado (quedó OK, no tocar estilos globales) */}
-              <div className="flex w-full flex-wrap gap-2 rounded-xl border border-slate-200 bg-white p-1">
+              <div className="inline-flex rounded-xl border border-slate-200 bg-white p-0.5">
                 {[
                   { k: "rosario", label: "Rosario" },
                   { k: "bahia", label: "Bahía Blanca" },
@@ -434,10 +345,11 @@ export default function DashboardAgricola() {
                 ].map((p) => (
                   <button
                     key={p.k}
-                    className={`cursor-pointer rounded-lg px-3 py-1.5 text-sm leading-none
-                      ${normalizePlaza(plaza) === p.k
+                    className={`cursor-pointer rounded-lg px-3 py-1.5 text-sm ${
+                      normalizePlaza(plaza) === p.k
                         ? "bg-slate-900 text-white"
-                        : "text-slate-700 hover:bg-slate-50"}`}
+                        : "text-slate-700 hover:bg-slate-50"
+                    }`}
                     onClick={() => setPlaza(p.k)}
                     title={`Cambiar a ${p.label}`}
                   >
@@ -474,30 +386,6 @@ export default function DashboardAgricola() {
                 onChange={(e) => setIntervalMin(Number(e.target.value) || 1)}
                 className="w-40 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
               />
-            </div>
-
-            {/* Power BI URL */}
-            <div className="mb-4">
-              <div className="mb-1 text-sm text-slate-600">Power BI (JSON web)</div>
-              <div className="flex items-center gap-2">
-                <input
-                  value={powerBiUrl}
-                  readOnly
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700"
-                />
-                <button
-                  className="cursor-pointer rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 hover:bg-slate-50 active:scale-[.99]"
-                  onClick={() => {
-                    navigator.clipboard?.writeText(powerBiUrl);
-                    showToast("success", "URL copiada", "Usala en Power BI → Origen web (JSON).");
-                  }}
-                >
-                  Copiar
-                </button>
-              </div>
-              <div className="mt-1 text-xs text-slate-500">
-                Power BI Desktop → Obtener datos → Web → pegar URL (usa proxy /api).
-              </div>
             </div>
 
             {/* Botones */}

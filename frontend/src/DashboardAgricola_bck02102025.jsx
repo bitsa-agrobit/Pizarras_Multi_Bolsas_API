@@ -2,19 +2,86 @@
 import React, { useEffect, useMemo, useState } from "react";
 
 /** === Helpers === */
-const API = ""; // usar proxy Vite → /api
 
-// Normalización de plaza con variantes y acentos (NO TOCAR: quedó OK)
-const normalizePlaza = (p) => {
-  if (!p) return "rosario";
-  const s = ("" + p).toLowerCase();
-  if (/(bah[ií]a|bah[ií]a\s+blanca|bbca|\bbb\b)/.test(s)) return "bahia";
-  if (/(c[óo]rdoba|cordoba|\bcba\b|\bcor\b|\bcb\b)/.test(s)) return "cordoba";
-  if (/(quequ[eé]n|\bqqn\b|\bque\b)/.test(s)) return "quequen";
-  if (/(d[áa]rsena|\bdar\b)/.test(s)) return "darsena";
-  if (/^loc(ales)?$/.test(s) || /mercado\s*local/.test(s)) return "locales";
-  return "rosario";
-};
+// Autodetección del backend:
+// - Usa VITE_API_BASE si está seteada (ej: http://localhost:8001)
+// - Si estamos en localhost y no hay env, intenta http://localhost:8001
+// - Luego, si algo de eso falla en runtime, hacemos fallback a ruta relativa (/api)
+function getApiBase() {
+  const env = import.meta?.env?.VITE_API_BASE;
+  if (env && typeof env === "string") return env.replace(/\/+$/, "");
+  const host = typeof window !== "undefined" ? window.location.hostname : "";
+  if (host === "localhost" || host === "127.0.0.1") return "http://localhost:8001";
+  return ""; // mismo origen (prod)
+}
+const API_BASE = getApiBase();
+
+// Hace fetch JSON con fallback: primero absoluto (API_BASE), si falla → relativo (/api)
+async function fetchJsonWithFallback(path, options) {
+  const tryAbs = async () => {
+    if (!API_BASE) throw new Error("skip-abs");
+    const res = await fetch(`${API_BASE}${path}`, options);
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`HTTP ${res.status} ${res.statusText} body=${body.slice(0, 300)}`);
+    }
+    const ct = res.headers.get("content-type") || "";
+    if (!ct.includes("application/json")) {
+      const t = await res.text();
+      throw new Error(`Respuesta no JSON del backend (abs). Inicio: ${t.slice(0, 300)}`);
+    }
+    return res.json();
+  };
+
+  const tryRel = async () => {
+    const res = await fetch(path, options);
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`HTTP ${res.status} ${res.statusText} (rel) body=${body.slice(0, 300)}`);
+    }
+    const ct = res.headers.get("content-type") || "";
+    if (!ct.includes("application/json")) {
+      const t = await res.text();
+      throw new Error(`Respuesta no JSON del backend (rel). Inicio: ${t.slice(0, 300)}`);
+    }
+    return res.json();
+  };
+
+  try {
+    return await tryAbs();
+  } catch (e) {
+    // Si fue error de red (connection refused / TypeError) o forzamos skip-abs → intentamos relativo
+    console.warn("[fetchJsonWithFallback] abs falló, probando relativo:", e?.message || e);
+    return await tryRel();
+  }
+}
+
+// Descarga binaria con fallback (para CSV)
+async function fetchBlobWithFallback(path, options) {
+  const tryAbs = async () => {
+    if (!API_BASE) throw new Error("skip-abs");
+    const res = await fetch(`${API_BASE}${path}`, options);
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`HTTP ${res.status} ${res.statusText} body=${body.slice(0, 300)}`);
+    }
+    return res.blob();
+  };
+  const tryRel = async () => {
+    const res = await fetch(path, options);
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`HTTP ${res.status} ${res.statusText} (rel) body=${body.slice(0, 300)}`);
+    }
+    return res.blob();
+  };
+  try {
+    return await tryAbs();
+  } catch (e) {
+    console.warn("[fetchBlobWithFallback] abs falló, probando relativo:", e?.message || e);
+    return await tryRel();
+  }
+}
 
 const fmtMoney = (value, currency) => {
   if (value == null || Number.isNaN(value)) return "s/c";
@@ -29,49 +96,27 @@ const fmtMoney = (value, currency) => {
 
 const isNumeric = (v) => typeof v === "number" && Number.isFinite(v);
 
-const looksLikeFuturo = (name = "") =>
-  /\b\d{2}\/\d{4}\b/i.test(name) ||
-  /\b(ENE|FEB|MAR|ABR|MAY|JUN|JUL|AGO|SEP|OCT|NOV|DIC)\b/i.test(name) ||
-  /(ROS|BAHIA|CHICAGO|MATBA|CBOT)/i.test(name);
+const looksLikeFuturo = (name = "") => {
+  return (
+    /\b\d{2}\/\d{4}\b/i.test(name) ||
+    /\b(ENE|FEB|MAR|ABR|MAY|JUN|JUL|AGO|SEP|OCT|NOV|DIC)\b/i.test(name) ||
+    /(ROS|BAHIA|CHICAGO|MATBA|CBOT)/i.test(name)
+  );
+};
 
-/** Agrupa por producto+moneda y conserva el primero con precio numérico */
+/** Agrupa por producto manteniendo un único precio por moneda */
 const dedupeByProducto = (items) => {
   const map = new Map();
   for (const it of items) {
-    const key = `${(it.product || "").trim().toUpperCase()}|${(it.currency || "").toUpperCase()}`;
+    const key = `${(it.producto || "").trim().toUpperCase()}|${it.moneda}`;
     const prev = map.get(key);
     if (!prev) map.set(key, it);
-    else if (!isNumeric(prev.price) && isNumeric(it.price)) map.set(key, it);
+    else if (!isNumeric(prev.precio) && isNumeric(it.precio)) map.set(key, it);
   }
   return Array.from(map.values());
 };
 
-/** Toast simple (no cambia estilos globales) */
-function Toast({ show, kind = "info", title, message, onClose }) {
-  if (!show) return null;
-  const colors = {
-    success: "bg-emerald-600",
-    error: "bg-rose-600",
-    info: "bg-slate-800",
-    warning: "bg-amber-600",
-  };
-  return (
-    <div className="fixed bottom-5 right-5 z-50 max-w-sm">
-      <div className={`text-white rounded-xl shadow-lg px-4 py-3 ${colors[kind] || colors.info}`}>
-        <div className="font-semibold">{title}</div>
-        {message && <div className="text-sm opacity-90 mt-0.5">{message}</div>}
-        <button
-          className="mt-2 inline-flex rounded-md border border-white/30 px-3 py-1 text-xs hover:bg-white/10"
-          onClick={onClose}
-          title="Cerrar"
-        >
-          Cerrar
-        </button>
-      </div>
-    </div>
-  );
-}
-
+/** === Componente principal === */
 export default function DashboardAgricola() {
   // Filtros/estado
   const [plaza, setPlaza] = useState("rosario");
@@ -83,158 +128,113 @@ export default function DashboardAgricola() {
   const [rows, setRows] = useState([]);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [intervalMin, setIntervalMin] = useState(1440);
-  const [infoUrl, setInfoUrl] = useState("https://www.bolsadecereales.com/camara-arbitral");
+  const [infoUrl, setInfoUrl] = useState(
+    "https://www.bolsadecereales.com/camara-arbitral"
+  );
   const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
 
-  // Toast state
-  const [toast, setToast] = useState({ show: false, kind: "info", title: "", message: "" });
-  const showToast = (kind, title, message) => {
-    setToast({ show: true, kind, title, message });
-    // auto-hide a los 4.5s
-    window.clearTimeout(showToast._t);
-    showToast._t = window.setTimeout(() => setToast((t) => ({ ...t, show: false })), 4500);
-  };
-
-  const fetchData = async (pz = plaza, t = tab) => {
+  const fetchData = async (pz = plaza) => {
     setLoading(true);
+    setErrorMsg("");
     try {
-      const onlyBase = t === "base" ? 1 : 0;
-      const res = await fetch(
-        `${API}/api/cotizaciones?plaza=${encodeURIComponent(normalizePlaza(pz))}&only_base=${onlyBase}`
-      );
-      const data = await res.json();
+      // Pedimos solo productos base y permitimos fallback a cache.
+      const path = `/api/cotizaciones?plaza=${encodeURIComponent(
+        pz
+      )}&only_base=1&fallback_cache=1&debug=0`;
 
-      const items = Array.isArray(data.items)
-        ? data.items.map((m) => ({
-            product: m.product ?? m.producto ?? m.name ?? m.nombre ?? "",
-            price: m.price ?? m.precio ?? null,
-            currency: (m.currency ?? m.moneda ?? "ARS")?.toUpperCase(),
-            delivery: m.delivery ?? m.entrega ?? "spot",
-            is_base: m.is_base ?? m.base ?? true,
-          }))
-        : [];
+      const data = await fetchJsonWithFallback(path, { credentials: "omit" });
 
-      setRows(items);
+      setRows(Array.isArray(data.items) ? data.items : []);
       if (data.source_url) setInfoUrl(data.source_url);
       setLastUpdated(new Date());
     } catch (e) {
-      console.error(e);
+      console.error("fetchData error:", e);
       setRows([]);
-      showToast("error", "Error al cargar", "No se pudieron obtener las cotizaciones.");
+      setErrorMsg(
+        e?.message ||
+          "No se pudieron obtener datos. Revisá que la API esté corriendo y el puerto sea accesible."
+      );
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchData(plaza, tab);
+    fetchData(plaza);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plaza, tab]);
+  }, [plaza]);
 
   /** Filtrado de lista para pintar */
   const filtered = useMemo(() => {
     const base = rows.filter((r) => {
-      const isFut = looksLikeFuturo(r.product);
+      const isFut = looksLikeFuturo(r.producto);
       return tab === "base" ? !isFut : isFut;
     });
-    const byCurr = base.filter((r) => (r.currency || "").toUpperCase() === currency);
+    const byCurr = base.filter((r) => (r.moneda || "").toUpperCase() === currency);
     const uniq = dedupeByProducto(byCurr);
-    const finalList = hideSC ? uniq.filter((r) => isNumeric(r.price)) : uniq;
-
+    const finalList = hideSC ? uniq.filter((r) => isNumeric(r.precio)) : uniq;
     finalList.sort((a, b) => {
-      const aN = isNumeric(a.price) ? 0 : 1;
-      const bN = isNumeric(b.price) ? 0 : 1;
+      const aN = isNumeric(a.precio) ? 0 : 1;
+      const bN = isNumeric(b.precio) ? 0 : 1;
       if (aN !== bN) return aN - bN;
-      return (a.product || "").localeCompare(b.product || "");
+      return (a.producto || "").localeCompare(b.producto || "");
     });
     return finalList;
   }, [rows, tab, currency, hideSC]);
 
   /** KPIs */
   const kpi = useMemo(() => {
-    const nums = filtered.map((r) => r.price).filter(isNumeric);
-    const avg = nums.length > 0 ? nums.reduce((a, b) => a + b, 0) / nums.length : 0;
-    return { promedio: avg, activos: nums.length };
+    const nums = filtered.map((r) => r.precio).filter(isNumeric);
+    const avg =
+      nums.length > 0
+        ? nums.reduce((a, b) => a + b, 0) / Math.max(nums.length, 1)
+        : 0;
+    return {
+      promedio: avg,
+      activos: nums.length,
+    };
   }, [filtered]);
 
   /** Acciones UI */
   const onStart = async () => {
     try {
-      const res = await fetch(
-        `${API}/api/start?plaza=${encodeURIComponent(normalizePlaza(plaza))}&interval_min=${intervalMin}`,
-        { method: "POST" }
-      );
-      const js = await res.json();
-      if (js?.ok) {
-        showToast(
-          "success",
-          "Automatización iniciada",
-          `Plaza ${normalizePlaza(plaza)} · cada ${intervalMin} min`
-        );
-      } else {
-        showToast("error", "No se pudo iniciar", js?.message || "Error desconocido");
-      }
+      const path = `/api/start?plaza=${plaza}&interval_min=${intervalMin}`;
+      const data = await fetchJsonWithFallback(path, { method: "POST" });
+      alert(data?.ok ? "Éxito: Automatización iniciada" : `Error al iniciar: ${data?.message || "desconocido"}`);
     } catch {
-      showToast("error", "No se pudo iniciar", "Error de red");
+      alert("Error de red al iniciar");
     }
   };
 
   const onExportOracle = async () => {
     try {
-      const res = await fetch(
-        `${API}/api/export/oracle?plaza=${encodeURIComponent(normalizePlaza(plaza))}`,
-        { method: "POST" }
+      const path = `/api/export/oracle?plaza=${plaza}&only_base=1`;
+      const data = await fetchJsonWithFallback(path, { method: "POST" });
+      alert(
+        data?.ok
+          ? `Éxito: exportadas ${data.exported} filas`
+          : `Error al exportar: ${data?.error || "desconocido"}`
       );
-      const js = await res.json();
-      if (js?.ok) {
-        const exp = js.exported ?? 0;
-        const exist = js.already ?? 0;
-        const skip = js.skipped ?? 0;
-
-        if (exp > 0) {
-          showToast(
-            "success",
-            "Exportación a Oracle OK",
-            `Insertadas ${exp} · Ya existentes ${exist} · Omitidas ${skip}`
-          );
-        } else if (exist > 0 && exp === 0) {
-          showToast(
-            "info",
-            "Sin cambios",
-            `Los ${exist} registros ya estaban insertados (omitidos ${skip}).`
-          );
-        } else {
-          showToast(
-            "warning",
-            "Sin datos",
-            "No había registros válidos para exportar."
-          );
-        }
-      } else {
-        showToast("error", "Exportación fallida", js?.error || "Error desconocido");
-      }
     } catch {
-      showToast("error", "Exportación fallida", "Error de red");
+      alert("Error de red al exportar");
     }
   };
 
   const onDownloadCSV = async () => {
     try {
-      const res = await fetch(
-        `${API}/api/csv?plaza=${encodeURIComponent(normalizePlaza(plaza))}`
-      );
-      const blob = await res.blob();
+      const path = `/api/csv?plaza=${plaza}&only_base=1&fallback_cache=1`;
+      const blob = await fetchBlobWithFallback(path);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `cotizaciones_${normalizePlaza(plaza)}.csv`;
+      a.download = `cotizaciones_${plaza}.csv`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      showToast("success", "CSV descargado", `cotizaciones_${normalizePlaza(plaza)}.csv`);
     } catch {
-      showToast("error", "No se pudo descargar el CSV", "Intentalo nuevamente.");
+      alert("No se pudo descargar el CSV");
     }
   };
 
@@ -248,22 +248,9 @@ export default function DashboardAgricola() {
           second: "2-digit",
         }).format(lastUpdated);
 
-  // URL Power BI (JSON)
-  const powerBiUrl = `${API}/api/powerbi/cotizaciones?plaza=${encodeURIComponent(
-    normalizePlaza(plaza)
-  )}&only_base=${tab === "base" ? 1 : 0}`;
-
   /** === Render === */
   return (
     <div className="mx-auto max-w-7xl px-4 py-6">
-      <Toast
-        show={toast.show}
-        kind={toast.kind}
-        title={toast.title}
-        message={toast.message}
-        onClose={() => setToast((t) => ({ ...t, show: false }))}
-      />
-
       {/* KPIs */}
       <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
         <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -284,14 +271,20 @@ export default function DashboardAgricola() {
             {lastLabel} {lastUpdated ? "· hace 0s" : ""}
           </div>
           <button
-            onClick={() => fetchData(plaza, tab)}
+            onClick={() => fetchData(plaza)}
             className="mt-3 inline-flex cursor-pointer items-center rounded-xl bg-slate-900 px-4 py-2 text-white hover:bg-slate-800 active:scale-[.99]"
-            title="Actualizar ahora"
           >
             Actualizar ahora
           </button>
         </div>
       </div>
+
+      {/* Mensaje de error visible si algo falla */}
+      {errorMsg && (
+        <div className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          {errorMsg}
+        </div>
+      )}
 
       {/* Grid principal: lista + panel sticky */}
       <div className="mt-8 grid grid-cols-1 gap-6 xl:grid-cols-[1fr_380px]">
@@ -300,7 +293,8 @@ export default function DashboardAgricola() {
           {/* Título + controles */}
           <div className="mb-4 flex flex-wrap items-center gap-3">
             <h2 className="text-xl font-semibold text-slate-900">
-              Cotizaciones <span className="text-slate-500"> · {normalizePlaza(plaza)}</span>
+              Cotizaciones
+              <span className="text-slate-500"> · {plaza}</span>
             </h2>
 
             {/* Tabs base/futuros */}
@@ -312,7 +306,6 @@ export default function DashboardAgricola() {
                     : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
                 }`}
                 onClick={() => setTab("base")}
-                title="Ver productos base"
               >
                 Productos base
               </button>
@@ -323,7 +316,6 @@ export default function DashboardAgricola() {
                     : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
                 }`}
                 onClick={() => setTab("futuros")}
-                title="Ver futuros / entregas"
               >
                 Futuros / entregas
               </button>
@@ -339,7 +331,6 @@ export default function DashboardAgricola() {
                         : "text-slate-700 hover:bg-slate-50"
                     }`}
                     onClick={() => setCurrency(c)}
-                    title={`Mostrar ${c}`}
                   >
                     {c}
                   </button>
@@ -347,7 +338,7 @@ export default function DashboardAgricola() {
               </div>
 
               {/* Ocultar s/c */}
-              <label className="ml-2 inline-flex cursor-pointer items-center gap-2 text-sm text-slate-700" title="Ocultar precios s/c">
+              <label className="ml-2 inline-flex cursor-pointer items-center gap-2 text-sm text-slate-700">
                 <input
                   type="checkbox"
                   className="h-4 w-4 cursor-pointer accent-slate-900"
@@ -367,39 +358,43 @@ export default function DashboardAgricola() {
               </div>
             )}
 
-            {!loading && filtered.length === 0 && (
+            {!loading && filtered.length === 0 && !errorMsg && (
               <div className="rounded-xl border border-slate-200 bg-white p-4 text-slate-500">
                 Sin datos
               </div>
             )}
 
             {filtered.map((item, idx) => {
-              const hasNum = isNumeric(item.price);
+              const isNum = isNumeric(item.precio);
               return (
                 <div
-                  key={`${item.product}-${item.currency}-${idx}`}
+                  key={`${item.producto}-${item.moneda}-${idx}`}
                   className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-sm"
                 >
                   <div className="flex items-center gap-3">
                     <div className="grid h-9 w-9 place-content-center rounded-full bg-emerald-50 text-emerald-700">
-                      {(item.product || "?").trim()[0] || "?"}
+                      {(item.producto || "?").trim()[0] || "?"}
                     </div>
                     <div>
                       <div className="text-slate-900 font-medium">
-                        {item.product || "—"}
+                        {item.producto || "—"}
                       </div>
                       <div className="text-xs uppercase tracking-wide text-slate-500">
-                        {(item.product || "").slice(0, 4) || ""}
+                        {(item.producto || "").slice(0, 4) || ""}
                       </div>
                     </div>
                   </div>
 
                   <div className="flex items-center gap-3">
-                    <span className={`${hasNum ? "text-slate-900 font-semibold" : "text-slate-400"}`}>
-                      {hasNum ? fmtMoney(item.price, item.currency) : "s/c"}
+                    <span
+                      className={`${
+                        isNum ? "text-slate-900 font-semibold" : "text-slate-400"
+                      }`}
+                    >
+                      {isNum ? fmtMoney(item.precio, item.moneda) : "s/c"}
                     </span>
                     <span className="text-[10px] rounded-md bg-slate-100 px-1.5 py-0.5 text-slate-500">
-                      {(item.currency || "").toUpperCase()}
+                      {(item.moneda || "").toUpperCase()}
                     </span>
                   </div>
                 </div>
@@ -421,25 +416,20 @@ export default function DashboardAgricola() {
             {/* Plaza */}
             <div className="mb-4">
               <div className="mb-1 text-sm text-slate-600">Plaza</div>
-
-              {/* Contenedor alineado (quedó OK, no tocar estilos globales) */}
-              <div className="flex w-full flex-wrap gap-2 rounded-xl border border-slate-200 bg-white p-1">
+              <div className="inline-flex rounded-xl border border-slate-200 bg-white p-0.5">
                 {[
                   { k: "rosario", label: "Rosario" },
                   { k: "bahia", label: "Bahía Blanca" },
-                  { k: "cordoba", label: "Córdoba" },
-                  { k: "quequen", label: "Quequén" },
-                  { k: "darsena", label: "Dársena" },
                   { k: "locales", label: "Locales" },
                 ].map((p) => (
                   <button
                     key={p.k}
-                    className={`cursor-pointer rounded-lg px-3 py-1.5 text-sm leading-none
-                      ${normalizePlaza(plaza) === p.k
+                    className={`cursor-pointer rounded-lg px-3 py-1.5 text-sm ${
+                      plaza === p.k
                         ? "bg-slate-900 text-white"
-                        : "text-slate-700 hover:bg-slate-50"}`}
+                        : "text-slate-700 hover:bg-slate-50"
+                    }`}
                     onClick={() => setPlaza(p.k)}
-                    title={`Cambiar a ${p.label}`}
                   >
                     {p.label}
                   </button>
@@ -476,70 +466,29 @@ export default function DashboardAgricola() {
               />
             </div>
 
-            {/* Power BI URL */}
-            <div className="mb-4">
-              <div className="mb-1 text-sm text-slate-600">Power BI (JSON web)</div>
-              <div className="flex items-center gap-2">
-                <input
-                  value={powerBiUrl}
-                  readOnly
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700"
-                />
-                <button
-                  className="cursor-pointer rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 hover:bg-slate-50 active:scale-[.99]"
-                  onClick={() => {
-                    navigator.clipboard?.writeText(powerBiUrl);
-                    showToast("success", "URL copiada", "Usala en Power BI → Origen web (JSON).");
-                  }}
-                >
-                  Copiar
-                </button>
-              </div>
-              <div className="mt-1 text-xs text-slate-500">
-                Power BI Desktop → Obtener datos → Web → pegar URL (usa proxy /api).
-              </div>
-            </div>
-
             {/* Botones */}
             <div className="flex flex-wrap items-center gap-3">
               <button
                 onClick={onStart}
                 className="cursor-pointer rounded-xl bg-emerald-600 px-4 py-2 text-white hover:bg-emerald-700 active:scale-[.99]"
-                title="Iniciar automatización"
               >
                 Iniciar
               </button>
               <button
                 onClick={onExportOracle}
                 className="cursor-pointer rounded-xl bg-amber-500 px-4 py-2 text-white hover:bg-amber-600 active:scale-[.99]"
-                title="Exportar a Oracle"
               >
                 Exportar a Oracle
               </button>
               <button
                 onClick={onDownloadCSV}
                 className="cursor-pointer rounded-xl border border-slate-200 bg-white px-4 py-2 text-slate-800 hover:bg-slate-50 active:scale-[.99]"
-                title="Descargar CSV"
               >
                 Descargar CSV
               </button>
             </div>
           </div>
         </aside>
-      </div>
-
-      <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-        <div className="text-sm text-slate-600">
-          Fuente:{" "}
-          <a
-            className="text-blue-600 hover:underline"
-            href={infoUrl}
-            target="_blank"
-            rel="noreferrer"
-          >
-            Cámara Arbitral de la Bolsa
-          </a>
-        </div>
       </div>
     </div>
   );
