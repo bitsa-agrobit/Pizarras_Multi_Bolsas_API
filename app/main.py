@@ -76,19 +76,81 @@ def normalize_plaza(p: str) -> Tuple[str, str]:
         return "locales", "Locales"
     return "rosario", "Rosario"
 
+# ⬇️ NUEVO: sólo se importa si se usa Playwright
+def _fetch_with_playwright(url: str, timeout_ms: int = 25000) -> str:
+    """
+    Descarga HTML usando Chromium headless (Playwright) para entornos con 403/429.
+    Requiere que el contenedor tenga playwright instalado (ya lo tenés) y
+    que Chromium esté disponible (en Dockerfile ya se hace install --with-deps).
+    """
+    from playwright.sync_api import sync_playwright
+
+    ua = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/126.0.0.0 Safari/537.36"
+    )
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+            ],
+        )
+        try:
+            context = browser.new_context(user_agent=ua, locale="es-AR")
+            page = context.new_page()
+            page.set_extra_http_headers({
+                "Accept-Language": "es-AR,es;q=0.9",
+                "Cache-Control": "no-cache",
+            })
+            page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+            # Un pequeño delay ayuda a que terminen scripts/tabla
+            page.wait_for_timeout(500)
+            html = page.content()
+            return html
+        finally:
+            browser.close()
+
 def fetch_html(url: str, timeout: int = 25) -> str:
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/126.0.0.0 Safari/537.36"
-        ),
-        "Accept-Language": "es-AR,es;q=0.9",
-        "Cache-Control": "no-cache",
-    }
-    resp = requests.get(url, headers=headers, timeout=timeout)
-    resp.raise_for_status()
-    return resp.text
+    """
+    1) Intenta con requests (rápido).
+    2) Si hay HTTP 403/429 (o si SCRAPER_DRIVER=playwright), cae a Playwright.
+    """
+    # Permite forzar el driver desde env (auto|requests|playwright)
+    driver = os.environ.get("SCRAPER_DRIVER", "auto").lower()
+
+    def _requests_fetch() -> str:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/126.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "es-AR,es;q=0.9",
+            "Cache-Control": "no-cache",
+        }
+        resp = requests.get(url, headers=headers, timeout=timeout)
+        resp.raise_for_status()
+        return resp.text
+
+    # 1) requests directo si no nos forzaron playwright
+    if driver in ("auto", "requests"):
+        try:
+            return _requests_fetch()
+        except requests.HTTPError as e:
+            code = getattr(e.response, "status_code", None)
+            # Sólo hacemos fallback por 403/429 en modo auto
+            if driver == "auto" and code in (403, 429):
+                pass  # intencional: seguimos a playwright
+            else:
+                raise
+
+    # 2) Fallback a Playwright (o forzado por env)
+    return _fetch_with_playwright(url, timeout_ms=timeout * 1000)
 
 def _clean_num(val: str) -> Optional[float]:
     """
