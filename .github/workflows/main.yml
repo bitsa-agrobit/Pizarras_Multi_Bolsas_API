@@ -80,6 +80,8 @@ jobs:
           SCRAPER_DRIVER: playwright
         run: |
           set -euxo pipefail
+          # activar el entorno virtual creado en el paso anterior
+          source .venv/bin/activate
           python3 - <<'PY'
           import os, sys, json
           from pathlib import Path
