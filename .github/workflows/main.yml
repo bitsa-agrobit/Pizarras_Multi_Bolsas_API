@@ -21,21 +21,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show runner info
-        shell: bash -l {0}
+      - name: Show runner info (no login shell)
+        shell: bash
         run: |
+          set -euxo pipefail
           uname -a || true
-          which python3 || true
+          command -v python3
           python3 --version
-          which pip3 || true
-          pip3 --version || true
-          which playwright || true
+          command -v pip3 || true
+          python3 -m pip --version || true
 
       - name: Install deps (sin oracledb)
-        shell: bash -l {0}
+        shell: bash
         run: |
-          pip3 install --upgrade pip
-          pip3 install \
+          set -euxo pipefail
+          python3 -m pip install --upgrade pip
+          python3 -m pip install \
             fastapi==0.115.6 \
             requests==2.32.3 \
             beautifulsoup4==4.12.3 \
@@ -47,8 +48,9 @@ jobs:
           python3 -m playwright install chromium
 
       - name: Make index.html
-        shell: bash -l {0}
+        shell: bash
         run: |
+          set -euxo pipefail
           mkdir -p public
           cat > public/index.html <<'HTML'
           <!doctype html><meta charset="utf-8">
@@ -67,16 +69,14 @@ jobs:
       - name: Run scraper (Playwright)
         env:
           SCRAPER_DRIVER: playwright
-        shell: bash -l {0}
+        shell: bash
         run: |
+          set -euxo pipefail
           python3 - <<'PY'
           import os, sys, json
           from pathlib import Path
-
           os.environ["SCRAPER_DRIVER"] = "playwright"
-
-          # Fuerza que Python vea app/main.py sin depender de PYTHONPATH
-          sys.path.insert(0, "app")
+          sys.path.insert(0, "app")     # importa app/main.py sin PYTHONPATH
           from main import cotizaciones
 
           def dump(plaza, only_base):
