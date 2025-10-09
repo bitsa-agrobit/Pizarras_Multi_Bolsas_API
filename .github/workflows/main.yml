@@ -35,7 +35,7 @@ jobs:
         shell: bash
         run: |
           python - <<'PY'
-          import sys, json
+          import os, json
           from pathlib import Path
           os.environ["SCRAPER_DRIVER"] = "playwright"
           from app.main import cotizaciones
