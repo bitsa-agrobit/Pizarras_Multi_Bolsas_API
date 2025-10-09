@@ -3,7 +3,16 @@ name: Daily scrape to GitHub Pages
 on:
   workflow_dispatch:
   schedule:
-    - cron: '15 12 * * *'  # ajustá horario UTC si querés
+    - cron: '15 12 * * *'   # diario 12:15 UTC
+  push:
+    paths:
+      - 'backend/**'
+      - '.github/workflows/main.yml'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
 
 jobs:
   build:
@@ -19,7 +28,7 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install -r backend/requirements.txt
+          pip install -r requirements.txt
           python -m playwright install --with-deps chromium
 
       - name: Run scraper
@@ -35,14 +44,14 @@ def dump(plaza, only_base):
     data = cotizaciones(plaza, only_base)
     Path("public").mkdir(exist_ok=True)
     fn = f"public/cotizaciones_{data['plaza']}.json"
-    with open(fn,"w",encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False)
+    with open(fn,"w",encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
 for plaza in ["rosario","bahia","cordoba","quequen","darsena","locales"]:
     dump(plaza, 1)
     dump(plaza, 0)
 print("OK")
 PY
 
-      # --- Publicación nativa a GitHub Pages (sin rama gh-pages) ---
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
@@ -53,9 +62,6 @@ PY
 
   deploy:
     needs: build
-    permissions:
-      pages: write
-      id-token: write
     runs-on: ubuntu-latest
     environment:
       name: github-pages
