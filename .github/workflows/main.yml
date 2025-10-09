@@ -28,6 +28,23 @@ jobs:
           pip install -r app/requirements.txt
           python -m playwright install --with-deps chromium
 
+      - name: Make index.html
+        run: |
+          mkdir -p public
+          cat > public/index.html <<'HTML'
+          <!doctype html><meta charset="utf-8">
+          <title>Pizarras cache</title>
+          <h1>Pizarras cache (GitHub Pages)</h1>
+          <ul>
+            <li><a href="cotizaciones_rosario.json">cotizaciones_rosario.json</a></li>
+            <li><a href="cotizaciones_bahia.json">cotizaciones_bahia.json</a></li>
+            <li><a href="cotizaciones_cordoba.json">cotizaciones_cordoba.json</a></li>
+            <li><a href="cotizaciones_quequen.json">cotizaciones_quequen.json</a></li>
+            <li><a href="cotizaciones_darsena.json">cotizaciones_darsena.json</a></li>
+            <li><a href="cotizaciones_locales.json">cotizaciones_locales.json</a></li>
+          </ul>
+          HTML
+
       - name: Run scraper
         env:
           SCRAPER_DRIVER: playwright
