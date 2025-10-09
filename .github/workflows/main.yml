@@ -3,13 +3,7 @@ name: Daily scrape to GitHub Pages
 on:
   workflow_dispatch:
   schedule:
-    - cron: '15 12 * * *'   # 12:15 UTC (ajustá si querés)
-
-# Necesario para publicar a Pages desde Actions
-permissions:
-  contents: write
-  pages: write
-  id-token: write
+    - cron: '15 12 * * *'
 
 jobs:
   build:
@@ -34,26 +28,21 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/backend
         run: |
           python - <<'PY'
-          import json
-          from pathlib import Path
-          sys.path.append("${{ github.workspace }}/backend")  # cinturón y tirantes
-          from main import cotizaciones
+import json
+from pathlib import Path
+sys.path.append("${{ github.workspace }}/backend")
+from main import cotizaciones
+def dump(plaza, only_base):
+    data = cotizaciones(plaza, only_base)
+    Path("public").mkdir(exist_ok=True)
+    fn = f"public/cotizaciones_{data['plaza']}.json"
+    with open(fn,"w",encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False)
+for plaza in ["rosario","bahia","cordoba","quequen","darsena","locales"]:
+    dump(plaza, 1)
+    dump(plaza, 0)
+print("OK")
+PY
 
-          def dump(plaza, only_base):
-              data = cotizaciones(plaza, only_base)
-              Path("public").mkdir(exist_ok=True)
-              suf = "_base" if int(only_base)==1 else ""
-              fn = f"public/cotizaciones_{data['plaza']}{suf}.json"
-              with open(fn, "w", encoding="utf-8") as f:
-                  json.dump(data, f, ensure_ascii=False)
-
-          for plaza in ["rosario","bahia","cordoba","quequen","darsena","locales"]:
-              dump(plaza, 1)
-              dump(plaza, 0)
-          print("OK")
-          PY
-
-      # Publicación nativa a GitHub Pages
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
@@ -64,6 +53,9 @@ jobs:
 
   deploy:
     needs: build
+    permissions:
+      pages: write
+      id-token: write
     runs-on: ubuntu-latest
     environment:
       name: github-pages
