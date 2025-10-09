@@ -16,25 +16,36 @@ concurrency:
 
 jobs:
   build:
-    runs-on: [self-hosted]   # tu runner local
+    runs-on: [self-hosted]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show runner info (no login shell)
+      # 👇 Creamos un directorio temporal SIN espacios y copiamos el repo ahí
+      - name: Make safe workspace
         shell: bash
         run: |
-          set -euxo pipefail
+          SAFE="$RUNNER_TEMP/work"
+          rm -rf "$SAFE"
+          mkdir -p "$SAFE"
+          rsync -a "$GITHUB_WORKSPACE"/ "$SAFE"/
+          echo "SAFE_WORKSPACE=$SAFE" >> "$GITHUB_ENV"
+
+      - name: Show runner info
+        shell: bash
+        working-directory: ${{ env.SAFE_WORKSPACE }}
+        run: |
           uname -a || true
           command -v python3
           python3 --version
           command -v pip3 || true
           python3 -m pip --version || true
+          ls -la
 
       - name: Install deps (sin oracledb)
         shell: bash
+        working-directory: ${{ env.SAFE_WORKSPACE }}
         run: |
-          set -euxo pipefail
           python3 -m pip install --upgrade pip
           python3 -m pip install \
             fastapi==0.115.6 \
@@ -44,13 +55,13 @@ jobs:
             html5lib==1.1 \
             pandas==2.2.2 \
             playwright==1.55.0
-          # En macOS self-hosted: sin --with-deps
+          # macOS self-hosted: sin --with-deps
           python3 -m playwright install chromium
 
       - name: Make index.html
         shell: bash
+        working-directory: ${{ env.SAFE_WORKSPACE }}
         run: |
-          set -euxo pipefail
           mkdir -p public
           cat > public/index.html <<'HTML'
           <!doctype html><meta charset="utf-8">
@@ -70,13 +81,13 @@ jobs:
         env:
           SCRAPER_DRIVER: playwright
         shell: bash
+        working-directory: ${{ env.SAFE_WORKSPACE }}
         run: |
-          set -euxo pipefail
           python3 - <<'PY'
           import os, sys, json
           from pathlib import Path
           os.environ["SCRAPER_DRIVER"] = "playwright"
-          sys.path.insert(0, "app")     # importa app/main.py sin PYTHONPATH
+          sys.path.insert(0, "app")   # tu código está en app/main.py
           from main import cotizaciones
 
           def dump(plaza, only_base):
@@ -100,7 +111,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: public
+          path: ${{ env.SAFE_WORKSPACE }}/public
 
   deploy:
     needs: build
