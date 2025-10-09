@@ -114,10 +114,14 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          # Forzar instalación en ARM nativo (Apple Silicon)
           if ! command -v gtar >/dev/null 2>&1; then
-            brew install gnu-tar
+            arch -arm64 brew install gnu-tar
           fi
+          # Mostrar versión para verificar
           gtar --version
+          # (Opcional) Priorizar los shims gnubin en PATH (exponen 'tar' → gtar)
+          echo "/opt/homebrew/opt/gnu-tar/libexec/gnubin" >> "$GITHUB_PATH"
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
