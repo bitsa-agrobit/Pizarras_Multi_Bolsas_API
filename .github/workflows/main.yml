@@ -12,23 +12,29 @@ permissions:
 
 jobs:
   build:
-    runs-on: [self-hosted]        # tu runner local
+    runs-on: [self-hosted]
     env:
-      RUNNER_TOOL_CACHE: ${{ github.workspace }}/_tool
-      RUNNER_TEMP: ${{ github.workspace }}/_temp
+      PATH: /opt/homebrew/bin:/usr/local/bin:${{ env.PATH }}
+      PY: /opt/homebrew/bin/python3
+      PIP: /opt/homebrew/bin/pip3
       PYTHONPATH: app
       SCRAPER_DRIVER: playwright
     steps:
       - uses: actions/checkout@v4
 
       - name: Check Python
-        run: python3 --version
-
-      - name: Install deps
         run: |
-          python3 -m pip install --upgrade pip
-          pip3 install -r app/requirements.txt
-          python3 -m playwright install chromium
+          "$PY" --version
+          "$PIP" --version || true
+
+      - name: Install deps (CI-light, sin oracledb)
+        run: |
+          "$PY" -m pip install --upgrade pip
+          # instala sólo lo que el scraper usa:
+          "$PIP" install fastapi==0.115.6 requests==2.32.3 beautifulsoup4==4.12.3 lxml==5.2.2 html5lib==1.1 pandas==2.2.2 playwright==1.55.0
+
+          # En macOS: SIN --with-deps
+          "$PY" -m playwright install chromium
 
       - name: Make index.html
         run: |
@@ -48,12 +54,14 @@ jobs:
           HTML
 
       - name: Run scraper
-        shell: bash
+        shell: bash -l {0}
         run: |
-          python - <<'PY'
+          "$PY" - <<'PY'
           import os, json
           from pathlib import Path
+          os.environ["SCRAPER_DRIVER"] = "playwright"
           from app.main import cotizaciones
+
           def dump(plaza, only_base):
               data = cotizaciones(plaza, only_base)
               Path("public").mkdir(exist_ok=True)
@@ -62,6 +70,7 @@ jobs:
               with open(fn, "w", encoding="utf-8") as f:
                   json.dump(data, f, ensure_ascii=False)
               print(f"Wrote {fn} (items={len(data.get('items',[]))}, error={data.get('error')})")
+
           for plaza in ["rosario","bahia","cordoba","quequen","darsena","locales"]:
               dump(plaza, 1)
               dump(plaza, 0)
