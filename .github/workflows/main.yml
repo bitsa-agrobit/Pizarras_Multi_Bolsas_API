@@ -31,13 +31,13 @@ jobs:
       - name: Run scraper
         env:
           SCRAPER_DRIVER: playwright
-          PYTHONPATH: ${{ github.workspace }}/backend
+          PYTHONPATH: ${{ github.workspace }}/app
         shell: bash
         run: |
           python - <<'PY'
           import sys, json
           from pathlib import Path
-          sys.path.append("${{ github.workspace }}/backend")
+          sys.path.append("${{ github.workspace }}/app")
           from main import cotizaciones
 
           def dump(plaza, only_base):
