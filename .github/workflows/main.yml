@@ -5,7 +5,6 @@ on:
   schedule:
     - cron: '15 12 * * *'  # 12:15 UTC
 
-# Permisos necesarios para publicar a GitHub Pages
 permissions:
   contents: write
   pages: write
@@ -17,32 +16,38 @@ concurrency:
 
 jobs:
   build:
-    # Asegurate que tu runner self-hosted tenga el label "self-hosted"
-    runs-on: [self-hosted]
-    env:
-      # Rutas típicas de Homebrew en macOS Apple Silicon
-      PATH: /opt/homebrew/bin:/usr/local/bin:${{ env.PATH }}
-      PY: /opt/homebrew/bin/python3
-      PIP: /opt/homebrew/bin/pip3
-      PYTHONPATH: app
-      SCRAPER_DRIVER: playwright
+    runs-on: [self-hosted]   # tu runner local
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Check Python
+      - name: Show runner info
+        shell: bash -l {0}
         run: |
-          "$PY" --version
-          "$PIP" --version || true
+          uname -a || true
+          which python3 || true
+          python3 --version
+          which pip3 || true
+          pip3 --version || true
+          which playwright || true
 
       - name: Install deps (sin oracledb)
+        shell: bash -l {0}
         run: |
-          "$PY" -m pip install --upgrade pip
-          "$PIP" install fastapi==0.115.6 requests==2.32.3 beautifulsoup4==4.12.3 lxml==5.2.2 html5lib==1.1 pandas==2.2.2 playwright==1.55.0
-          # En macOS (self-hosted) NO uses --with-deps
-          "$PY" -m playwright install chromium
+          pip3 install --upgrade pip
+          pip3 install \
+            fastapi==0.115.6 \
+            requests==2.32.3 \
+            beautifulsoup4==4.12.3 \
+            lxml==5.2.2 \
+            html5lib==1.1 \
+            pandas==2.2.2 \
+            playwright==1.55.0
+          # En macOS self-hosted: sin --with-deps
+          python3 -m playwright install chromium
 
       - name: Make index.html
+        shell: bash -l {0}
         run: |
           mkdir -p public
           cat > public/index.html <<'HTML'
@@ -59,15 +64,20 @@ jobs:
           </ul>
           HTML
 
-      - name: Run scraper
+      - name: Run scraper (Playwright)
+        env:
+          SCRAPER_DRIVER: playwright
         shell: bash -l {0}
         run: |
-          "$PY" - <<'PY'
-          import os, json
+          python3 - <<'PY'
+          import os, sys, json
           from pathlib import Path
+
           os.environ["SCRAPER_DRIVER"] = "playwright"
-          # importa desde tu estructura real; si tu módulo es backend/main.py cambia a "from backend.main import cotizaciones"
-          from app.main import cotizaciones
+
+          # Fuerza que Python vea app/main.py sin depender de PYTHONPATH
+          sys.path.insert(0, "app")
+          from main import cotizaciones
 
           def dump(plaza, only_base):
               data = cotizaciones(plaza, only_base)
