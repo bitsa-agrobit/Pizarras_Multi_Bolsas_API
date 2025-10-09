@@ -3,9 +3,8 @@ name: Daily scrape to GitHub Pages
 on:
   workflow_dispatch:
   schedule:
-    - cron: '15 12 * * *'  # 12:15 UTC (ajustá si querés)
+    - cron: '15 12 * * *'  # 12:15 UTC
 
-# Permisos para Pages
 permissions:
   contents: write
   pages: write
@@ -17,10 +16,11 @@ concurrency:
 
 jobs:
   build:
-    runs-on: [self-hosted]   # tu runner limpio, sin espacios en la ruta
+    runs-on: [self-hosted]
     env:
       PYTHONPATH: app
       SCRAPER_DRIVER: playwright
+      HOMEBREW_NO_AUTO_UPDATE: 1
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,10 +39,8 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          # Crear entorno virtual para aislar dependencias
           python3 -m venv .venv
           source .venv/bin/activate
-
           python3 -m pip install --upgrade pip
           python3 -m pip install \
             fastapi==0.115.6 \
@@ -52,7 +50,6 @@ jobs:
             html5lib==1.1 \
             pandas==2.2.2 \
             playwright==1.55.0
-
           python3 -m playwright install chromium
 
       - name: Make index.html
@@ -80,14 +77,13 @@ jobs:
           SCRAPER_DRIVER: playwright
         run: |
           set -euxo pipefail
-          # activar el entorno virtual creado en el paso anterior
           source .venv/bin/activate
           python3 - <<'PY'
           import os, sys, json
           from pathlib import Path
           os.environ["SCRAPER_DRIVER"] = "playwright"
-          sys.path.insert(0, "app")     # el código está en app/main.py
-          from main import cotizaciones  # importa tu función existente
+          sys.path.insert(0, "app")
+          from main import cotizaciones
 
           def dump(plaza, only_base):
               data = cotizaciones(plaza, only_base)
@@ -108,21 +104,20 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
-          if [ ! -d "public" ]; then
-            echo "ERROR: no existe la carpeta public/ en $(pwd)"
-            ls -la
-            exit 1
-          fi
-          echo "Listado de public/:"
-          ls -la public || true
-          echo "Árbol de public/:"
-          (command -v tree >/dev/null && tree -a public) || find public -type f -maxdepth 2 -print
+          [ -d public ] || (echo "public/ no existe"; exit 1)
+          find public -type f -maxdepth 2 -print
           # Falla si está vacía
-          if [ -z "$(find public -type f -maxdepth 2 | head -n1)" ]; then
-            echo "ERROR: public/ no contiene archivos para publicar"
-            exit 1
+          test -n "$(find public -type f -maxdepth 2 | head -n1)"
+
+      # 👇 Paso nuevo: asegurar gtar en macOS self-hosted
+      - name: Ensure gnu-tar (gtar)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if ! command -v gtar >/dev/null 2>&1; then
+            brew install gnu-tar
           fi
+          gtar --version
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
@@ -131,7 +126,6 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: ${{ github.workspace }}/public
-          if-no-files-found: error
 
   deploy:
     needs: build
