@@ -39,6 +39,10 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          # Crear entorno virtual para aislar dependencias
+          python3 -m venv .venv
+          source .venv/bin/activate
+
           python3 -m pip install --upgrade pip
           python3 -m pip install \
             fastapi==0.115.6 \
@@ -48,7 +52,7 @@ jobs:
             html5lib==1.1 \
             pandas==2.2.2 \
             playwright==1.55.0
-          # En macOS self-hosted: NO uses --with-deps
+
           python3 -m playwright install chromium
 
       - name: Make index.html
