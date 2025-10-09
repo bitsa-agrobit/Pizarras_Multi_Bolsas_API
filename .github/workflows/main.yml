@@ -3,37 +3,43 @@ name: Daily scrape to GitHub Pages
 on:
   workflow_dispatch:
   schedule:
-    - cron: '15 12 * * *'
+    - cron: '15 12 * * *'  # 12:15 UTC
 
+# Permisos necesarios para publicar a GitHub Pages
 permissions:
   contents: write
   pages: write
   id-token: write
 
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
 jobs:
   build:
+    # Asegurate que tu runner self-hosted tenga el label "self-hosted"
     runs-on: [self-hosted]
     env:
+      # Rutas típicas de Homebrew en macOS Apple Silicon
       PATH: /opt/homebrew/bin:/usr/local/bin:${{ env.PATH }}
       PY: /opt/homebrew/bin/python3
       PIP: /opt/homebrew/bin/pip3
       PYTHONPATH: app
       SCRAPER_DRIVER: playwright
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Check Python
         run: |
           "$PY" --version
           "$PIP" --version || true
 
-      - name: Install deps (CI-light, sin oracledb)
+      - name: Install deps (sin oracledb)
         run: |
           "$PY" -m pip install --upgrade pip
-          # instala sólo lo que el scraper usa:
           "$PIP" install fastapi==0.115.6 requests==2.32.3 beautifulsoup4==4.12.3 lxml==5.2.2 html5lib==1.1 pandas==2.2.2 playwright==1.55.0
-
-          # En macOS: SIN --with-deps
+          # En macOS (self-hosted) NO uses --with-deps
           "$PY" -m playwright install chromium
 
       - name: Make index.html
@@ -60,6 +66,7 @@ jobs:
           import os, json
           from pathlib import Path
           os.environ["SCRAPER_DRIVER"] = "playwright"
+          # importa desde tu estructura real; si tu módulo es backend/main.py cambia a "from backend.main import cotizaciones"
           from app.main import cotizaciones
 
           def dump(plaza, only_base):
