@@ -35,7 +35,7 @@ jobs:
         shell: bash
         run: |
           python - <<'PY'
-          import json
+          import sys, json
           from pathlib import Path
           sys.path.append("${{ github.workspace }}/backend")
           from main import cotizaciones
