@@ -104,13 +104,34 @@ jobs:
           print("OK")
           PY
 
+      - name: Verify artifact contents
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+          if [ ! -d "public" ]; then
+            echo "ERROR: no existe la carpeta public/ en $(pwd)"
+            ls -la
+            exit 1
+          fi
+          echo "Listado de public/:"
+          ls -la public || true
+          echo "Árbol de public/:"
+          (command -v tree >/dev/null && tree -a public) || find public -type f -maxdepth 2 -print
+          # Falla si está vacía
+          if [ -z "$(find public -type f -maxdepth 2 | head -n1)" ]; then
+            echo "ERROR: public/ no contiene archivos para publicar"
+            exit 1
+          fi
+
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: public
+          path: ${{ github.workspace }}/public
+          if-no-files-found: error
 
   deploy:
     needs: build
