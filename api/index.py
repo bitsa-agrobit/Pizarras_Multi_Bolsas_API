@@ -1,94 +1,74 @@
 # api/index.py
-import os
-import sys
-import importlib
+import os, sys, importlib, traceback
 from pathlib import Path
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
-# 1) PYTHONPATH al root del repo (index.py está en /api)
+# PYTHONPATH al root del repo
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# 2) En cloud, nunca Oracle a menos que lo habilites explícito
+# En cloud: skip Oracle
 os.environ.setdefault("DEV_SKIP_DB", "1")
-
-# 3) Si Oracle está deshabilitado, inyectar stub para evitar errores de import
-if os.getenv("DEV_SKIP_DB", "1") == "1":
+if os.getenv("DEV_SKIP_DB") == "1":
     try:
-        import oracledb  # si existe, no hacer nada
+        import oracledb  # si existe, ok
     except Exception:
         class _NoOracle:
             def __getattr__(self, name):
                 raise RuntimeError("Oracle client disabled in cloud (DEV_SKIP_DB=1)")
         sys.modules["oracledb"] = _NoOracle()
 
+tried = ("app.main", "app.app", "backend.main", "main")
 _last_error = None
 _imported_from = None
+module = None
 
-# 4) Intentar importar módulo que contenga la app
-for candidate in ("app.main", "backend.main", "main"):
+for cand in tried:
     try:
-        module = importlib.import_module(candidate)
-        _imported_from = candidate
+        module = importlib.import_module(cand)
+        _imported_from = cand
         break
     except Exception as e:
         _last_error = e
-        module = None
+
+def _find_fastapi_app(m):
+    # 1) nombres comunes
+    for name in ("app", "api", "application", "fastapi_app"):
+        if hasattr(m, name):
+            return getattr(m, name)
+    # 2) detección por tipo
+    from fastapi import FastAPI
+    for name, obj in vars(m).items():
+        if isinstance(obj, FastAPI):
+            return obj
+    return None
 
 if module is not None:
-    # 5) Obtener la instancia FastAPI: primero 'app', luego nombres comunes, luego detección por tipo
-    try:
-        app = getattr(module, "app")
-    except AttributeError:
-        for name in ("api", "application", "fastapi_app"):
-            if hasattr(module, name):
-                app = getattr(module, name)
-                break
-        else:
-            # detección por tipo
-            try:
-                from fastapi import FastAPI
-                for name, obj in vars(module).items():
-                    if isinstance(obj, FastAPI):
-                        app = obj
-                        break
-                else:
-                    raise AttributeError("No FastAPI instance found (looked for app/api/application)")
-            except Exception as e:
-                _last_error = e
-                app = None
+    app = _find_fastapi_app(module)
+else:
+    app = None
 
-# 6) Si aún no tenemos 'app', exponer diagnóstico sin crashear
-if module is None or app is None:
-    from fastapi import FastAPI
-    from fastapi.responses import JSONResponse
-    import traceback
-
-    print("[index.py] IMPORT ERROR — could not import FastAPI app", file=sys.stderr)
-    if _last_error:
-        traceback.print_exc(file=sys.stderr)
-
+if app is None:
+    # fallback con diagnóstico (no crashea)
     app = FastAPI()
 
     @app.get("/__import_error__")
     def import_error():
-        detail = f"{type(_last_error).__name__}: {_last_error}" if _last_error else "unknown"
         return JSONResponse(
             status_code=500,
             content={
                 "error": "Could not import FastAPI app",
-                "tried": ["app.main", "backend.main", "main"],
-                "detail": detail,
+                "tried": list(tried),
+                "detail": f"{type(_last_error).__name__}: {_last_error}" if _last_error else "unknown",
             },
         )
-else:
-    # Log de dónde cargó
-    print(f"[index.py] Loaded FastAPI app from '{_imported_from}'", file=sys.stderr)
 
-# 7) Agregar un root “friendly” si tu app no define "/"
+# raíz amigable (si tu app no lo define)
 try:
-    existing_paths = {getattr(r, "path", "") for r in getattr(app.router, "routes", [])}
-    if "/" not in existing_paths:
+    existing = {getattr(r, "path", "") for r in getattr(app.router, "routes", [])}
+    if "/" not in existing:
         @app.get("/")
         def root():
             return {
