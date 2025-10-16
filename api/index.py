@@ -1,15 +1,15 @@
 # api/index.py
-import os, sys, importlib, traceback
+import os, sys, importlib
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-# PYTHONPATH al root del repo
+# PYTHONPATH al root
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# En cloud: skip Oracle
+# En cloud, nunca Oracle salvo que lo habilites
 os.environ.setdefault("DEV_SKIP_DB", "1")
 if os.getenv("DEV_SKIP_DB") == "1":
     try:
@@ -34,26 +34,19 @@ for cand in tried:
         _last_error = e
 
 def _find_fastapi_app(m):
-    # 1) nombres comunes
     for name in ("app", "api", "application", "fastapi_app"):
         if hasattr(m, name):
             return getattr(m, name)
-    # 2) detección por tipo
     from fastapi import FastAPI
     for name, obj in vars(m).items():
         if isinstance(obj, FastAPI):
             return obj
     return None
 
-if module is not None:
-    app = _find_fastapi_app(module)
-else:
-    app = None
+app = _find_fastapi_app(module) if module else None
 
 if app is None:
-    # fallback con diagnóstico (no crashea)
     app = FastAPI()
-
     @app.get("/__import_error__")
     def import_error():
         return JSONResponse(
@@ -65,7 +58,7 @@ if app is None:
             },
         )
 
-# raíz amigable (si tu app no lo define)
+# raíz amigable si no existe
 try:
     existing = {getattr(r, "path", "") for r in getattr(app.router, "routes", [])}
     if "/" not in existing:

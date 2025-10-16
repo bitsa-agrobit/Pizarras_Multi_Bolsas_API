@@ -16,6 +16,11 @@
 # - Endpoint /api/powerbi/cotizaciones (JSON simple, apto Power BI).
 # - Sin cambios en scraping/normalizaciones existentes.
 
+# --- serverless import fix (permite "import config/db/normalizer/scrapers" desde app/) ---
+if __package__ in (None, ""):
+    import os, sys
+    sys.path.insert(0, os.path.dirname(__file__))
+
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
