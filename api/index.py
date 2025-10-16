@@ -43,3 +43,20 @@ else:
                 "detail": f"{type(_last_error).__name__}: {_last_error}",
             },
         )
+    
+    # Añadir al final de api/index.py, luego de obtener `app`
+    try:
+        existing_paths = {getattr(r, "path", "") for r in getattr(app.router, "routes", [])}
+        if "/" not in existing_paths:
+            @app.get("/")
+            def root():
+                return {
+                    "name": "Pizarras Multi Bolsas API",
+                    "status": "ok",
+                    "docs": "/docs",
+                    "health": "/api/health",
+                    "oracle_health": "/api/health/oracle",
+                    "example": "/api/cotizaciones?plaza=Rosario&only_base=1"
+                }
+    except Exception:
+        pass  # si falla por cualquier motivo, no rompe la app
