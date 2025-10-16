@@ -1,0 +1,96 @@
+name: Build & Deploy Azure Web App (Container)
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: ${{ vars.GHCR_IMAGE }}
+  AZURE_WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image
+        run: |
+          docker build -t $IMAGE_NAME:latest -f backend/Dockerfile .
+
+      - name: Push image
+        run: |
+          docker push $IMAGE_NAME:latest
+
+  deploy:
+    needs: build-push
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientId }}
+          tenant-id: ${{ fromJson(secrets.AZURE_CREDENTIALS).tenantId }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Create RG (if not exists)
+        run: |
+          az group create -n ${{ vars.AZURE_RG }} -l ${{ vars.AZURE_LOCATION }}
+
+      - name: Create App Service Plan (Linux) if not exists
+        run: |
+          az appservice plan create \
+            --name plan-${{ env.AZURE_WEBAPP_NAME }} \
+            --resource-group ${{ vars.AZURE_RG }} \
+            --sku B1 --is-linux || true
+
+      - name: Create Web App (container) if not exists
+        run: |
+          az webapp create \
+            --resource-group ${{ vars.AZURE_RG }} \
+            --plan plan-${{ env.AZURE_WEBAPP_NAME }} \
+            --name ${{ env.AZURE_WEBAPP_NAME }} \
+            --runtime "PYTHON|3.12" \
+            --deployment-container-image-name ${{ env.IMAGE_NAME }}:latest || true
+
+      - name: Configure container image
+        run: |
+          az webapp config container set \
+            --name ${{ env.AZURE_WEBAPP_NAME }} \
+            --resource-group ${{ vars.AZURE_RG }} \
+            --docker-custom-image-name ${{ env.IMAGE_NAME }}:latest \
+            --enable-app-service-storage false
+
+      - name: Set app settings (env vars)
+        run: |
+          az webapp config appsettings set \
+            --name ${{ env.AZURE_WEBAPP_NAME }} \
+            --resource-group ${{ vars.AZURE_RG }} \
+            --settings \
+              APP_PORT=${{ vars.APP_PORT }} \
+              ORACLE_HOST=${{ vars.ORACLE_HOST }} \
+              ORACLE_PORT=${{ vars.ORACLE_PORT }} \
+              ORACLE_SERVICE=${{ vars.ORACLE_SERVICE }} \
+              ORACLE_USER=${{ secrets.ORACLE_USER }} \
+              ORACLE_PASSWORD=${{ secrets.ORACLE_PASSWORD }} \
+              ORACLE_SCHEMA=${{ vars.ORACLE_SCHEMA }} \
+              ORACLE_CLIENT_LIB_DIR=${{ vars.ORACLE_CLIENT_LIB_DIR }}
+
+      - name: Restart web app
+        run: |
+          az webapp restart -g ${{ vars.AZURE_RG }} -n ${{ env.AZURE_WEBAPP_NAME }}
