@@ -1,0 +1,14 @@
+requirements.txt
+frontend/
+node_modules/
+oracle/
+instantclient_*/
+**/__pycache__/
+.venv/
+.env*
+*.log
+docs/
+tests/
+data/
+*.csv
+*.xlsx

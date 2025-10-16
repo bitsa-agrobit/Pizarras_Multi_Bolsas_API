@@ -1,0 +1,11 @@
+{
+  "functions": {
+    "api/index.py": {
+      "runtime": "python3.12",
+      "excludeFiles": "{frontend/**,**/tests/**,**/__pycache__/**,**/*.md,**/*.log,oracle/**,instantclient_*/**,node_modules/**,.venv/**,**/*.csv,**/*.xlsx,docs/**}"
+    }
+  },
+  "routes": [
+    { "src": "/(.*)", "dest": "/api/index.py" }
+  ]
+}
