@@ -35,3 +35,12 @@ node_modules/
 dist/
 .DS_Store
 data/
+# Pesados: no versionar
+oracle/instantclient/
+actions-runner/
+*.tar.gz
+*.dmg
+*.pkg
+*.zip
+*.7z
+*.iso
