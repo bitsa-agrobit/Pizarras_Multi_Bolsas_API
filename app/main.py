@@ -29,8 +29,21 @@ import threading
 import io
 import csv
 import os
+
+# Flag: desactiva Oracle en cloud (DEV_SKIP_DB=1 por defecto)
+USE_DB = os.getenv("DEV_SKIP_DB", "1") != "1"
 import hashlib
 from datetime import datetime
+from . import app  # o tu import actual
+
+allowed = os.getenv("ALLOWED_ORIGINS", "").split(",") if os.getenv("ALLOWED_ORIGINS") else []
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed or ["https://DiegoRigazio.github.io"],  # reemplazar
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 APP_TITLE = "Pizarras Granos API"
 SOURCE_URL = "https://www.bolsadecereales.com/camara-arbitral"
@@ -79,41 +92,100 @@ def normalize_plaza(p: str) -> Tuple[str, str]:
 # ⬇️ NUEVO: sólo se importa si se usa Playwright
 def _fetch_with_playwright(url: str, timeout_ms: int = 25000) -> str:
     """
-    Descarga HTML usando Chromium headless (Playwright) para entornos con 403/429.
-    Requiere que el contenedor tenga playwright instalado (ya lo tenés) y
-    que Chromium esté disponible (en Dockerfile ya se hace install --with-deps).
+    Navegación headless con huella de navegador real.
+    1) Intenta Chromium 'stealth'
+    2) Si ve 403/blank, reintenta con WebKit (Safari).
     """
     from playwright.sync_api import sync_playwright
 
-    ua = (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/126.0.0.0 Safari/537.36"
-    )
+    def _stealth_headers():
+        return {
+            # Copia de un request real de Chrome estable
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "es-AR,es;q=0.9,en;q=0.8",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+        }
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
+    def _apply_stealth(context):
+        # Oculta señales típicas de automatización
+        context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (p) => (
+              p && p.name === 'notifications'
+                ? Promise.resolve({ state: Notification.permission })
+                : originalQuery(p)
+            );
+            Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+            Object.defineProperty(navigator, 'language', { get: () => 'es-AR' });
+            Object.defineProperty(navigator, 'languages', { get: () => ['es-AR','es'] });
+            // WebGL vendor/renderer
+            try {
+              const getParameter = WebGLRenderingContext.prototype.getParameter;
+              WebGLRenderingContext.prototype.getParameter = function(param){
+                if (param === 37445) return 'Google Inc. (Intel)';
+                if (param === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics 770 Direct3D11 vs_5_0 ps_5_0, D3D11)';
+                return getParameter.call(this, param);
+              }
+            } catch(e) {}
+        """)
+
+    def _try_browser(p, engine: str):
+        ua = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/126.0.0.0 Safari/537.36"
+        )
+        browser_type = getattr(p, engine)  # 'chromium' o 'webkit'
+        browser = browser_type.launch(
             headless=True,
             args=[
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
-            ],
+                "--disable-blink-features=AutomationControlled",
+                "--disable-features=IsolateOrigins,site-per-process",
+            ] if engine == "chromium" else []
         )
+        context = browser.new_context(
+            user_agent=ua if engine == "chromium" else None,
+            locale="es-AR",
+            timezone_id="America/Argentina/Buenos_Aires",
+            viewport={"width": 1366, "height": 768},
+        )
+        if engine == "chromium":
+            _apply_stealth(context)
+        page = context.new_page()
+        page.set_extra_http_headers(_stealth_headers())
+
+        # Evitar ruido
+        page.route("**/*", lambda route: route.abort()
+                   if route.request.resource_type in ("image", "font", "media") else route.continue_())
         try:
-            context = browser.new_context(user_agent=ua, locale="es-AR")
-            page = context.new_page()
-            page.set_extra_http_headers({
-                "Accept-Language": "es-AR,es;q=0.9",
-                "Cache-Control": "no-cache",
-            })
             page.goto(url, wait_until="networkidle", timeout=timeout_ms)
-            # Un pequeño delay ayuda a que terminen scripts/tabla
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(700)
             html = page.content()
-            return html
+            # Si la página devolvió explícitamente 403, Playwright lo ve en response
+            resp = page.main_frame.response()
+            status = resp.status if resp else 200
+            return html, status
         finally:
             browser.close()
+
+    with sync_playwright() as p:
+        # 1) Chromium “stealth”
+        html, status = _try_browser(p, "chromium")
+        if status != 403 and "Acceso denegado" not in html and "Forbidden" not in html:
+            return html
+        # 2) Fallback WebKit (Safari)
+        html, _ = _try_browser(p, "webkit")
+        return html
 
 def fetch_html(url: str, timeout: int = 25) -> str:
     """
@@ -383,6 +455,25 @@ def scrape_plaza(plaza_norm: str) -> List[Dict[str, Any]]:
 @app.get("/api/health")
 def health() -> Dict[str, Any]:
     return {"ok": True, "service": APP_TITLE, "ts": time.time()}
+
+@app.get("/api/health/oracle")
+def health_oracle():
+    """
+    Health DB: si DEV_SKIP_DB=1 → {"status":"skip"} sin intentar importar oracledb.
+    Si está habilitado, intenta abrir/cerrar conexión mínima.
+    """
+    if not USE_DB:
+        return {"status": "skip"}
+    try:
+        conn = _oracle_connect()
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+        return {"status": "ok"}
+    except Exception as ex:
+        return JSONResponse({"status": "error", "detail": f"{type(ex).__name__}: {ex}"}, status_code=500)
 
 @app.get("/api/cotizaciones")
 def cotizaciones(
