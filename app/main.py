@@ -50,6 +50,52 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/api/health/oracle")
+def health_oracle():
+    if not USE_DB:
+        return {"status": "skip"}
+    try:
+        import oracledb  # solo se intenta si USE_DB=True
+        # Si quisieras, acá podrías abrir/cerrar una conexión mínima
+        return {"status": "enabled"}
+    except Exception as ex:
+        return JSONResponse(
+            {"status": "error", "detail": f"{type(ex).__name__}: {ex}"},
+            status_code=500
+        )
+    
+# --- HTTP client con headers "de navegador" para evitar 403 ---
+import requests
+
+BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "es-AR,es;q=0.9,en;q=0.8",
+    "Referer": "https://www.bolsadecereales.com/",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "DNT": "1",
+}
+
+_SESSION = requests.Session()
+_SESSION.headers.update(BROWSER_HEADERS)
+
+def http_get(url: str, **kwargs) -> requests.Response:
+    """GET con headers de navegador + fallback de UA si hay 403."""
+    timeout = kwargs.pop("timeout", 20)
+    resp = _SESSION.get(url, timeout=timeout, **kwargs)
+    if resp.status_code == 403:
+        # cambia el UA y reintenta una vez
+        _SESSION.headers["User-Agent"] = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        )
+        resp = _SESSION.get(url, timeout=timeout, **kwargs)
+    resp.raise_for_status()
+    return resp
+# --- fin HTTP client ---
+
 # ---------------------------
 # Utilidades de normalización
 # ---------------------------
@@ -91,7 +137,8 @@ def fetch_html(url: str, timeout: int = 25) -> str:
         "Accept-Language": "es-AR,es;q=0.9",
         "Cache-Control": "no-cache",
     }
-    resp = requests.get(url, headers=headers, timeout=timeout)
+    #resp = requests.get(url, headers=headers, timeout=timeout)
+    resp = http_get(url, headers=headers, timeout=timeout)
     resp.raise_for_status()
     return resp.text
 
