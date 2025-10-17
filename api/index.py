@@ -1,15 +1,15 @@
 # api/index.py
-import os, sys, importlib, importlib.util, traceback
+import os, sys, importlib
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-# 1) PYTHONPATH: root del repo (index.py está en /api)
+# Agregar el ROOT del repo al PYTHONPATH (index.py está en /api)
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# 2) En cloud: nunca Oracle salvo que se habilite explícito
+# En cloud deshabilitamos Oracle
 os.environ.setdefault("DEV_SKIP_DB", "1")
 if os.getenv("DEV_SKIP_DB") == "1":
     try:
@@ -20,69 +20,47 @@ if os.getenv("DEV_SKIP_DB") == "1":
                 raise RuntimeError("Oracle client disabled in cloud (DEV_SKIP_DB=1)")
         sys.modules["oracledb"] = _NoOracle()
 
-errors = {}
-imported_from = None
-app = None
+# Intentar import por módulos comunes
+tried = ("app.main", "app.app", "backend.main", "main")
+_last_error = None
+_imported_from = None
+module = None
 
-def find_fastapi_app(module):
-    for name in ("app", "api", "application", "fastapi_app"):
-        if hasattr(module, name):
-            return getattr(module, name)
+for cand in tried:
     try:
-        from fastapi import FastAPI as _F
-        for name, obj in vars(module).items():
-            if isinstance(obj, _F):
-                return obj
-    except Exception:
-        pass
+        module = importlib.import_module(cand)
+        _imported_from = cand
+        break
+    except Exception as e:
+        _last_error = e
+
+def _find_fastapi_app(m):
+    for name in ("app", "api", "application", "fastapi_app"):
+        if hasattr(m, name):
+            return getattr(m, name)
+    from fastapi import FastAPI as _F
+    for name, obj in vars(m).items():
+        if isinstance(obj, _F):
+            return obj
     return None
 
-# 3) Import por módulo
-for cand in ("app.main", "app.app", "backend.main", "main"):
-    try:
-        m = importlib.import_module(cand)
-        a = find_fastapi_app(m)
-        if a is not None:
-            app = a
-            imported_from = cand
-            break
-        else:
-            errors[cand] = "Module imported but no FastAPI instance found"
-    except Exception as e:
-        errors[cand] = f"{type(e).__name__}: {e}"
+app = _find_fastapi_app(module) if module else None
 
-# 4) Fallback: cargar por ruta de archivo (evita problemas de paquete)
-if app is None:
-    for rel in (("app", "main.py"), ("app", "app.py"), ("main.py",)):
-        p = ROOT.joinpath(*rel)
-        if p.exists():
-            try:
-                spec = importlib.util.spec_from_file_location("app_dynamic", str(p))
-                mod = importlib.util.module_from_spec(spec)
-                assert spec and spec.loader
-                spec.loader.exec_module(mod)  # ejecuta el archivo
-                a = find_fastapi_app(mod)
-                if a is not None:
-                    app = a
-                    imported_from = f"file:{p.relative_to(ROOT)}"
-                    break
-                else:
-                    errors[f"file:{p.relative_to(ROOT)}"] = "Loaded but no FastAPI instance found"
-            except Exception as e:
-                errors[f"file:{p.relative_to(ROOT)}"] = f"{type(e).__name__}: {e}"
-
-# 5) Si no se pudo, exponer diagnóstico (sin crashear)
+# Si falló, exponer diagnóstico sin crashear
 if app is None:
     app = FastAPI()
-
     @app.get("/__import_error__")
     def import_error():
         return JSONResponse(
             status_code=500,
-            content={"error": "Could not import FastAPI app", "errors": errors},
+            content={
+                "error": "Could not import FastAPI app",
+                "tried": list(tried),
+                "detail": f"{type(_last_error).__name__}: {_last_error}" if _last_error else "unknown",
+            },
         )
 
-# 6) Raíz amigable (solo si no existe "/")
+# Raíz amigable si tu app no define "/"
 try:
     existing = {getattr(r, "path", "") for r in getattr(app.router, "routes", [])}
     if "/" not in existing:
@@ -95,7 +73,7 @@ try:
                 "health": "/api/health",
                 "oracle_health": "/api/health/oracle",
                 "example": "/api/cotizaciones?plaza=Rosario&only_base=1",
-                "imported_from": imported_from,
+                "imported_from": _imported_from,
             }
 except Exception:
     pass
