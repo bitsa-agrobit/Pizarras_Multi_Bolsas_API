@@ -4,16 +4,14 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-# PYTHONPATH al root
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# En cloud, nunca Oracle salvo que lo habilites
 os.environ.setdefault("DEV_SKIP_DB", "1")
 if os.getenv("DEV_SKIP_DB") == "1":
     try:
-        import oracledb  # si existe, ok
+        import oracledb
     except Exception:
         class _NoOracle:
             def __getattr__(self, name):
@@ -58,7 +56,6 @@ if app is None:
             },
         )
 
-# raíz amigable si no existe
 try:
     existing = {getattr(r, "path", "") for r in getattr(app.router, "routes", [])}
     if "/" not in existing:
