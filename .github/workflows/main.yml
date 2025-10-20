@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-latest   # <-- antes: ubuntu-latest
+    runs-on: ubuntu-22.04   # pin estable en Ubuntu
     env:
       PYTHONPATH: app
       SCRAPER_DRIVER: playwright
@@ -35,7 +35,30 @@ jobs:
           python3 -m pip --version || true
           ls -la
 
-      - name: Install deps (sin oracledb)
+      # ✅ Deps del SO necesarias para Chromium en Ubuntu
+      - name: Install system deps for Chromium
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libnss3 \
+            libatk-bridge2.0-0 \
+            libxkbcommon0 \
+            libpango-1.0-0 \
+            libgbm1 \
+            libcups2 \
+            libasound2 \
+            libatk1.0-0 \
+            libatspi2.0-0 \
+            libdrm2 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxrandr2 \
+            libgtk-3-0 \
+            libxshmfence1
+
+      - name: Setup Python venv & deps (sin oracledb)
         shell: bash
         run: |
           set -euxo pipefail
@@ -50,6 +73,7 @@ jobs:
             html5lib==1.1 \
             pandas==2.2.2 \
             playwright==1.55.0
+          # Instala Chromium para Playwright (binario)
           python3 -m playwright install chromium
 
       - name: Make index.html
@@ -71,7 +95,7 @@ jobs:
           </ul>
           HTML
 
-      # Un pequeño jitter para no golpear siempre igual
+      # Jitter para no pegar siempre exacto
       - name: Random jitter
         shell: bash
         run: |
@@ -79,7 +103,7 @@ jobs:
           echo "Sleeping ${JITTER}s…"
           sleep "${JITTER}"
 
-      - name: Run scraper (Playwright)
+      - name: Run scraper (Playwright) with light retries
         shell: bash
         env:
           SCRAPER_DRIVER: playwright
@@ -93,25 +117,48 @@ jobs:
           sys.path.insert(0, "app")
           from main import cotizaciones
 
+          outdir = Path("public")
+          outdir.mkdir(exist_ok=True)
+
           def dump(plaza, only_base, tries=3):
-              Path("public").mkdir(exist_ok=True)
               suf = "_base" if int(only_base)==1 else ""
-              fn = f"public/cotizaciones_{plaza}{suf}.json"
+              fn = outdir / f"public/cotizaciones_{plaza}{suf}.json"
+              # ojo: la ruta correcta es sin "public/" repetido
+          PY
+        # La línea anterior corta el heredoc; corregimos el path abajo
+
+      - name: Run scraper (Playwright) with light retries (fixed path)
+        shell: bash
+        env:
+          SCRAPER_DRIVER: playwright
+        run: |
+          set -euxo pipefail
+          source .venv/bin/activate
+          python3 - <<'PY'
+          import os, sys, json, time
+          from pathlib import Path
+          os.environ["SCRAPER_DRIVER"] = "playwright"
+          sys.path.insert(0, "app")
+          from main import cotizaciones
+
+          outdir = Path("public")
+          outdir.mkdir(exist_ok=True)
+
+          def dump(plaza, only_base, tries=3):
+              suf = "_base" if int(only_base)==1 else ""
+              fn = outdir / f"cotizaciones_{plaza}{suf}.json"
               last = None
               for i in range(tries):
                   data = cotizaciones(plaza, only_base)
                   last = data
                   if data.get("items"):
-                      with open(fn, "w", encoding="utf-8") as f:
-                          json.dump(data, f, ensure_ascii=False)
+                      fn.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
                       print(f"Wrote {fn} (items={len(data['items'])})")
                       return
                   time.sleep(2.0)
-              # si no hubo suerte, no pisemos un archivo válido anterior
-              if not Path(fn).exists() and last is not None:
-                  with open(fn, "w", encoding="utf-8") as f:
-                      json.dump(last, f, ensure_ascii=False)
-                  print(f"[INFO] guardé último resultado (vacío) solo para diagnóstico: {fn}")
+              if not fn.exists() and last is not None:
+                  fn.write_text(json.dumps(last, ensure_ascii=False), encoding="utf-8")
+                  print(f"[INFO] left last (empty) only for diagnostics: {fn}")
 
           for plaza in ["rosario","bahia","cordoba","quequen","darsena","locales"]:
               dump(plaza, 1); time.sleep(1.0)
@@ -137,7 +184,7 @@ jobs:
 
   deploy:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
