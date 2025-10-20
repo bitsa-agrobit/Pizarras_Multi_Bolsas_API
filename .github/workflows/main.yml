@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: false
+  cancel-in-progress: true   # evita carreras en paralelo
 
 jobs:
   build:
@@ -71,7 +71,15 @@ jobs:
           </ul>
           HTML
 
-      - name: Run scraper (Playwright)
+      # Jitter inicial para no pegarle siempre a la misma hora exacta
+      - name: Random jitter
+        shell: bash
+        run: |
+          JITTER=$(( (RANDOM % 60) + 20 ))  # 20–79s
+          echo "Sleeping ${JITTER}s before scraping..."
+          sleep "${JITTER}"
+
+      - name: Run scraper (Playwright) with retries & preserve-on-fail
         shell: bash
         env:
           SCRAPER_DRIVER: playwright
@@ -79,24 +87,58 @@ jobs:
           set -euxo pipefail
           source .venv/bin/activate
           python3 - <<'PY'
-          import os, sys, json
+          import os, sys, json, time
           from pathlib import Path
-          os.environ["SCRAPER_DRIVER"] = "playwright"
+          os.environ["SCRAPER_DRIVER"] = "playwright"  # no tocamos tu app
           sys.path.insert(0, "app")
           from main import cotizaciones
 
-          def dump(plaza, only_base):
-              data = cotizaciones(plaza, only_base)
-              Path("public").mkdir(exist_ok=True)
-              suf = "_base" if int(only_base)==1 else ""
-              fn = f"public/cotizaciones_{data['plaza']}{suf}.json"
-              with open(fn, "w", encoding="utf-8") as f:
-                  json.dump(data, f, ensure_ascii=False)
-              print(f"Wrote {fn} (items={len(data.get('items',[]))}, error={data.get('error')})")
+          outdir = Path("public")
+          outdir.mkdir(exist_ok=True)
 
-          for plaza in ["rosario","bahia","cordoba","quequen","darsena","locales"]:
-              dump(plaza, 1)
-              dump(plaza, 0)
+          def write_if_ok(fn: Path, data: dict):
+            items = data.get("items") or []
+            if items:
+              fn.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+              print(f"Wrote {fn} (items={len(items)})")
+              return True
+            else:
+              if fn.exists():
+                print(f"[WARN] vacío => preservo {fn} existente")
+              else:
+                print(f"[WARN] vacío y no existe {fn}; no creo archivo")
+              return False
+
+          def scrape_with_retries(plaza: str, only_base: int, attempts=3, sleep_s=2.0):
+            suf = "_base" if int(only_base)==1 else ""
+            # Usamos el nombre tal como lo generabas antes
+            fn = outdir / f"cotizaciones_{plaza}{suf}.json"
+            last = None
+            for i in range(1, attempts+1):
+              try:
+                data = cotizaciones(plaza, only_base)
+                last = data
+                if write_if_ok(fn, data):
+                  return True
+                else:
+                  print(f"[TRY {i}/{attempts}] {plaza} only_base={only_base} vacío, reintento en {sleep_s}s…")
+                  time.sleep(sleep_s)
+              except Exception as e:
+                print(f"[TRY {i}/{attempts}] error {plaza} only_base={only_base}: {e} ; retry in {sleep_s}s")
+                time.sleep(sleep_s)
+            # último intento no exitoso: si no hay archivo previo, al menos dejamos el último JSON (aunque vacío) para diagnosticar
+            if not fn.exists() and last is not None:
+              fn.write_text(json.dumps(last, ensure_ascii=False), encoding="utf-8")
+              print(f"[INFO] guardé último resultado (vacío) sólo para diagnóstico: {fn}")
+            return False
+
+          plazas = ["rosario","bahia","cordoba","quequen","darsena","locales"]
+          for p in plazas:
+            scrape_with_retries(p, 1, attempts=3, sleep_s=3.0)  # base
+            time.sleep(1.5)
+            scrape_with_retries(p, 0, attempts=3, sleep_s=3.0)  # full
+            time.sleep(2.0)
+
           print("OK")
           PY
 
@@ -106,22 +148,8 @@ jobs:
           set -euxo pipefail
           [ -d public ] || (echo "public/ no existe"; exit 1)
           find public -type f -maxdepth 2 -print
-          # Falla si está vacía
+          # Debe existir al menos un archivo
           test -n "$(find public -type f -maxdepth 2 | head -n1)"
-
-      # 👇 Paso nuevo: asegurar gtar en macOS self-hosted
-      - name: Ensure gnu-tar (gtar)
-        shell: bash
-        run: |
-          set -euxo pipefail
-          # Forzar instalación en ARM nativo (Apple Silicon)
-          if ! command -v gtar >/dev/null 2>&1; then
-            arch -arm64 brew install gnu-tar
-          fi
-          # Mostrar versión para verificar
-          gtar --version
-          # (Opcional) Priorizar los shims gnubin en PATH (exponen 'tar' → gtar)
-          echo "/opt/homebrew/opt/gnu-tar/libexec/gnubin" >> "$GITHUB_PATH"
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
