@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     env:
       PYTHONPATH: app
       SCRAPER_DRIVER: playwright
@@ -35,7 +35,7 @@ jobs:
           python3 -m pip --version || true
           ls -la
 
-      - name: Setup Python & deps (sin oracledb)
+      - name: Install deps (sin oracledb)
         shell: bash
         run: |
           set -euxo pipefail
@@ -50,9 +50,7 @@ jobs:
             html5lib==1.1 \
             pandas==2.2.2 \
             playwright==1.55.0
-          # 🔹 binario y dependencias del SO para Chromium
           python3 -m playwright install chromium
-          python3 -m playwright install-deps
 
       - name: Make index.html
         shell: bash
@@ -120,7 +118,7 @@ jobs:
 
   deploy:
     needs: build
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
