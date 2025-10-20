@@ -12,45 +12,50 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
-env:
-  PY_VER: "3.11"
-
-# ========= JOB 1: UBUNTU =========
 jobs:
-  build-ubuntu:
+  build:
     runs-on: ubuntu-22.04
-    outputs:
-      has_data: ${{ steps.check.outputs.has_data }}
+    env:
+      PYTHONPATH: app
+      SCRAPER_DRIVER: playwright
+      HOMEBREW_NO_AUTO_UPDATE: 1
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PY_VER }}
-
-      - name: Install system deps for Chromium
+      - name: Show runner info
+        shell: bash
         run: |
           set -euxo pipefail
-          sudo apt-get update
-          sudo apt-get install -y \
-            libnss3 libatk-bridge2.0-0 libxkbcommon0 libpango-1.0-0 libgbm1 \
-            libcups2 libasound2 libatk1.0-0 libatspi2.0-0 libdrm2 libxcomposite1 \
-            libxdamage1 libxrandr2 libgtk-3-0 libxshmfence1
+          uname -a || true
+          command -v python3
+          python3 --version
+          python3 -m pip --version || true
+          ls -la
 
-      - name: Setup venv & deps
+      - name: Setup Python & deps (sin oracledb)
+        shell: bash
         run: |
           set -euxo pipefail
-          python -m venv .venv
+          python3 -m venv .venv
           source .venv/bin/activate
-          python -m pip install --upgrade pip
-          pip install fastapi==0.115.6 requests==2.32.3 beautifulsoup4==4.12.3 \
-                     lxml==5.2.2 html5lib==1.1 pandas==2.2.2 playwright==1.55.0
-          python -m playwright install chromium
+          python3 -m pip install --upgrade pip
+          python3 -m pip install \
+            fastapi==0.115.6 \
+            requests==2.32.3 \
+            beautifulsoup4==4.12.3 \
+            lxml==5.2.2 \
+            html5lib==1.1 \
+            pandas==2.2.2 \
+            playwright==1.55.0
+          # 🔹 binario y dependencias del SO para Chromium
+          python3 -m playwright install chromium
+          python3 -m playwright install-deps
 
       - name: Make index.html
+        shell: bash
         run: |
           set -euxo pipefail
           mkdir -p public
@@ -69,86 +74,57 @@ jobs:
           HTML
 
       - name: Run scraper (Playwright)
+        shell: bash
         env:
           SCRAPER_DRIVER: playwright
         run: |
           set -euxo pipefail
           source .venv/bin/activate
-          python - <<'PY'
-          import os, sys, json, time
+          python3 - <<'PY'
+          import os, sys, json
           from pathlib import Path
           os.environ["SCRAPER_DRIVER"] = "playwright"
           sys.path.insert(0, "app")
           from main import cotizaciones
 
-          outdir = Path("public")
-          outdir.mkdir(exist_ok=True)
-
-          def dump(plaza, only_base, tries=3):
+          def dump(plaza, only_base):
+              data = cotizaciones(plaza, only_base)
+              Path("public").mkdir(exist_ok=True)
               suf = "_base" if int(only_base)==1 else ""
-              fn = outdir / f"cotizaciones_{plaza}{suf}.json"
-              last = None
-              for _ in range(tries):
-                  d = cotizaciones(plaza, only_base); last = d
-                  if d.get("items"):
-                      fn.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
-                      return True
-                  time.sleep(2)
-              if not fn.exists() and last is not None:
-                  fn.write_text(json.dumps(last, ensure_ascii=False), encoding="utf-8")
-              return False
+              fn = f"public/cotizaciones_{data['plaza']}{suf}.json"
+              with open(fn, "w", encoding="utf-8") as f:
+                  json.dump(data, f, ensure_ascii=False)
+              print(f"Wrote {fn} (items={len(data.get('items',[]))}, error={data.get('error')})")
 
-          for p in ["rosario","bahia","cordoba","quequen","darsena","locales"]:
-              dump(p, 1); time.sleep(1)
-              dump(p, 0); time.sleep(1)
-          print("DONE")
+          for plaza in ["rosario","bahia","cordoba","quequen","darsena","locales"]:
+              dump(plaza, 1)
+              dump(plaza, 0)
+          print("OK")
           PY
 
-      - name: Check data presence
-        id: check
+      - name: Verify artifact contents
+        shell: bash
         run: |
           set -euxo pipefail
-          HAVE=$(python - <<'PY'
-          import json,glob
-          ok=False
-          for f in glob.glob("public/cotizaciones_*.json"):
-              try:
-                  d=json.load(open(f,encoding="utf-8"))
-                  if d.get("items"): ok=True; break
-              except Exception: pass
-          print("true" if ok else "false")
-          PY
-          )
-          echo "has_data=$HAVE" >> $GITHUB_OUTPUT
-          echo "has_data=$HAVE"
+          [ -d public ] || (echo "public/ no existe"; exit 1)
+          find public -type f -maxdepth 2 -print
+          test -n "$(find public -type f -maxdepth 2 | head -n1)"
 
       - name: Configure Pages
-        if: steps.check.outputs.has_data == 'true'
         uses: actions/configure-pages@v5
 
-      - name: Upload artifact (ubuntu)
-        if: steps.check.outputs.has_data == 'true'
+      - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: public
+          path: ${{ github.workspace }}/public
 
-# ========= JOB 2: macOS (solo si Ubuntu no tuvo datos) =========
-  build-macos:
-    needs: build-ubuntu
-    if: needs.build-ubuntu.outputs.has_data != 'true'
-    runs-on: macos-latest
-    outputs:
-      has_data: ${{ steps.check.outputs.has_data }}
+  deploy:
+    needs: build
+    runs-on: ubuntu-22.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PY_VER }}
-
-      - name: Setup venv & deps
-        run: |
-          python -m venv .venv
-          source .venv/bin/activate
-          python -m pip install --upgrade pip
-          pip install fastapi==0.115.6 requests==2.32.3 beautifulsoup4==4.12.3 \
-                     lxml==5.2.2 htm
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
