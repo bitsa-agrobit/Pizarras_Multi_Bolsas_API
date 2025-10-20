@@ -1,4 +1,4 @@
-name: Daily scrape to GitHub Pages
+name: Daily scrape to GitHub Pages (self-hosted prod)
 
 on:
   workflow_dispatch:
@@ -16,46 +16,25 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     env:
       PYTHONPATH: app
       SCRAPER_DRIVER: playwright
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Show runner info
-        shell: bash
-        run: |
-          set -euxo pipefail
-          uname -a || true
-          python3 --version
-          python3 -m pip --version || true
-          ls -la
-
-      - name: Setup Python & deps (incl. Playwright + system deps)
-        shell: bash
+      - name: Python & deps
         run: |
           set -euxo pipefail
           python3 -m venv .venv
-          source .venv/bin/activate
+          . .venv/bin/activate
           python -m pip install --upgrade pip
-          python -m pip install \
-            fastapi==0.115.6 \
-            requests==2.32.3 \
-            beautifulsoup4==4.12.3 \
-            lxml==5.2.2 \
-            html5lib==1.1 \
-            pandas==2.2.2 \
-            playwright==1.55.0
-          # Binario de Chromium + dependencias del SO para Ubuntu
+          python -m pip install fastapi==0.115.6 requests==2.32.3 beautifulsoup4==4.12.3 \
+                                 lxml==5.2.2 html5lib==1.1 pandas==2.2.2 playwright==1.55.0
           python -m playwright install chromium
-          python -m playwright install-deps
 
-      - name: Make index.html
-        shell: bash
+      - name: Make index
         run: |
-          set -euxo pipefail
           mkdir -p public
           cat > public/index.html <<'HTML'
           <!doctype html><meta charset="utf-8">
@@ -72,118 +51,62 @@ jobs:
           </ul>
           HTML
 
-      - name: Run scraper (Playwright) — genera los JSON individuales
-        shell: bash
+      - name: Scrape (Playwright) → JSON individuales
         env:
           SCRAPER_DRIVER: playwright
         run: |
           set -euxo pipefail
-          source .venv/bin/activate
-          python3 - <<'PY'
+          . .venv/bin/activate
+          python - <<'PY'
           import os, sys, json
           from pathlib import Path
           os.environ["SCRAPER_DRIVER"] = "playwright"
           sys.path.insert(0, "app")
           from main import cotizaciones
 
-          outdir = Path("public")
-          outdir.mkdir(exist_ok=True)
-
+          outdir = Path("public"); outdir.mkdir(exist_ok=True)
           def dump(plaza, only_base):
-              data = cotizaciones(plaza, only_base)
+              d = cotizaciones(plaza, only_base)
               suf = "_base" if int(only_base)==1 else ""
-              fn = outdir / f"cotizaciones_{data['plaza']}{suf}.json"
-              fn.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-              print(f"Wrote {fn} (items={len(data.get('items',[]))}, error={data.get('error')})")
-
-          for plaza in ["rosario","bahia","cordoba","quequen","darsena","locales"]:
-              dump(plaza, 1)
-              dump(plaza, 0)
-          print("OK")
+              fn = outdir / f"cotizaciones_{d['plaza']}{suf}.json"
+              fn.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+          for p in ["rosario","bahia","cordoba","quequen","darsena","locales"]:
+              dump(p,1); dump(p,0)
           PY
 
-      - name: List scraped JSONs (debug rápido)
-        shell: bash
+      - name: Consolidar a all.json (inline, sin tocar repo)
         run: |
           set -euxo pipefail
-          ls -la public || true
-          echo "Total cotizaciones_*.json:"
-          ls public/cotizaciones_*.json | wc -l || true
-
-      # ======= Consolidación a all.json SIN tocar tu repo (inline) =======
-      - name: Build consolidated all.json (inline, sin cambiar tu código)
-        shell: bash
-        run: |
-          set -euxo pipefail
-          source .venv/bin/activate
-          python3 - <<'PY'
-          import json, glob, os
+          . .venv/bin/activate
+          python - <<'PY'
+          import json, glob
           from pathlib import Path
           from datetime import datetime, timezone
-
-          OUT = Path("public")
-          OUT.mkdir(exist_ok=True)
-          today_dir = OUT / "data" / datetime.now(timezone.utc).strftime("%Y-%m-%d")
-          today_dir.mkdir(parents=True, exist_ok=True)
-
-          items = []
-          by_plaza = {}
-          plazas = set()
-
-          def add_file(fp):
+          OUT=Path("public"); OUT.mkdir(exist_ok=True)
+          day=OUT/"data"/datetime.now(timezone.utc).strftime("%Y-%m-%d"); day.mkdir(parents=True, exist_ok=True)
+          items=[]; plazas=set(); by={}
+          for f in glob.glob("public/cotizaciones_*.json"):
               try:
-                  with open(fp, encoding="utf-8") as f:
-                      d = json.load(f)
-                  plaza = d.get("plaza")
-                  arr = d.get("items") or []
-                  if plaza:
-                      plazas.add(plaza)
-                      by_plaza.setdefault(plaza, []).extend(arr)
+                  d=json.load(open(f,encoding="utf-8"))
+                  p=d.get("plaza"); arr=d.get("items") or []
+                  if p: plazas.add(p); by.setdefault(p,[]).extend(arr)
                   items.extend(arr)
-              except Exception as e:
-                  print(f"[WARN] no pude leer {fp}: {e}")
-
-          # Tomamos todos los JSON individuales generados por tu scraper
-          for p in glob.glob("public/cotizaciones_*.json"):
-              add_file(p)
-
-          consolidated = {
-              "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-              "source": "Pizarras_Multi_Bolsas_API",
-              "plazas": sorted(plazas),
-              "items": items,
-              "by_plaza": by_plaza,
-          }
-
-          # Escribimos en raíz y en carpeta por fecha
-          (OUT / "all.json").write_text(json.dumps(consolidated, ensure_ascii=False), encoding="utf-8")
-          (today_dir / "all.json").write_text(json.dumps(consolidated, ensure_ascii=False), encoding="utf-8")
-          print(f"Wrote {OUT/'all.json'} and {today_dir/'all.json'} (items={len(items)})")
+              except: pass
+          payload={"generated_at":datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                   "source":"Pizarras_Multi_Bolsas_API","plazas":sorted(plazas),
+                   "items":items,"by_plaza":by}
+          (OUT/"all.json").write_text(json.dumps(payload,ensure_ascii=False),encoding="utf-8")
+          (day/"all.json").write_text(json.dumps(payload,ensure_ascii=False),encoding="utf-8")
           PY
 
-      - name: Verify artifact contents
-        shell: bash
-        run: |
-          set -euxo pipefail
-          [ -d public ] || (echo "public/ no existe"; exit 1)
-          test -f public/all.json
-          find public -type f -maxdepth 3 -print | sed -n '1,200p'
-
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: ${{ github.workspace }}/public
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: public }
 
   deploy:
     needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: self-hosted
+    environment: { name: github-pages, url: ${{ steps.deployment.outputs.page_url }} }
     steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
+      - id: deployment
         uses: actions/deploy-pages@v4
