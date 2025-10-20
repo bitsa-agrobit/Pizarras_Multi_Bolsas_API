@@ -1,4 +1,4 @@
-name: Daily scrape to GitHub Pages
+Voy a optar por la opción A. Te paso el archivo main.yml del workflow de: name: Daily scrape to GitHub Pages
 
 on:
   workflow_dispatch:
@@ -100,41 +100,27 @@ jobs:
           print("OK")
           PY
 
-      # 👉 NUEVO: generar all.json dentro de public/ (mismo artefacto que Pages)
-      - name: Merge all boards into public/all.json
-        shell: bash
-        run: |
-          set -euxo pipefail
-          # el script no necesita dependencias extra, pero si querés usar venv:
-          source .venv/bin/activate
-          OUTPUT_DIR=public python scripts/merge_json.py
-
-          # Agregar link a all.json en el índice (idempotente)
-          if ! grep -q 'all.json' public/index.html; then
-            # insertar antes del cierre </ul>
-            sed -i 's#</ul>#  <li><a href="all.json">all.json (consolidado)</a></li>\n</ul>#' public/index.html
-          fi
-
       - name: Verify artifact contents
         shell: bash
         run: |
           set -euxo pipefail
           [ -d public ] || (echo "public/ no existe"; exit 1)
-          find public -maxdepth 2 -type f -print
-          test -f public/all.json
-          # al menos 1 archivo
+          find public -type f -maxdepth 2 -print
+          # Falla si está vacía
           test -n "$(find public -type f -maxdepth 2 | head -n1)"
 
-      # 👇 SOLO en macOS self-hosted; evitar en ubuntu-latest
-      - name: Ensure gnu-tar (gtar) on macOS runners
-        if: runner.os == 'macOS'
+      # 👇 Paso nuevo: asegurar gtar en macOS self-hosted
+      - name: Ensure gnu-tar (gtar)
         shell: bash
         run: |
           set -euxo pipefail
+          # Forzar instalación en ARM nativo (Apple Silicon)
           if ! command -v gtar >/dev/null 2>&1; then
             arch -arm64 brew install gnu-tar
           fi
+          # Mostrar versión para verificar
           gtar --version
+          # (Opcional) Priorizar los shims gnubin en PATH (exponen 'tar' → gtar)
           echo "/opt/homebrew/opt/gnu-tar/libexec/gnubin" >> "$GITHUB_PATH"
 
       - name: Configure Pages
@@ -154,4 +140,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v4 Ajustarlo en basu a tu sugerencia de la opción A.
