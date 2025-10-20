@@ -1,4 +1,4 @@
-Voy a optar por la opción A. Te paso el archivo main.yml del workflow de: name: Daily scrape to GitHub Pages
+name: Daily scrape to GitHub Pages
 
 on:
   workflow_dispatch:
