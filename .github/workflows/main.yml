@@ -3,129 +3,39 @@ name: Daily scrape to GitHub Pages
 on:
   workflow_dispatch:
   schedule:
-    - cron: '15 12 * * *'  # 12:15 UTC
+    - cron: '15 12 * * *'  # horario UTC
 
 permissions:
-  contents: write
+  contents: read
   pages: write
   id-token: write
 
 concurrency:
-  group: pages
+  group: 'pages'
   cancel-in-progress: true
 
 jobs:
   build:
-    runs-on: macos-latest   # <-- antes: ubuntu-latest
-    env:
-      PYTHONPATH: app
-      SCRAPER_DRIVER: playwright
-      HOMEBREW_NO_AUTO_UPDATE: 1
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Show runner info
-        shell: bash
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
         run: |
-          set -euxo pipefail
-          uname -a || true
-          command -v python3
-          python3 --version
-          python3 -m pip --version || true
-          ls -la
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
 
-      - name: Install deps (sin oracledb)
-        shell: bash
-        run: |
-          set -euxo pipefail
-          python3 -m venv .venv
-          source .venv/bin/activate
-          python3 -m pip install --upgrade pip
-          python3 -m pip install \
-            fastapi==0.115.6 \
-            requests==2.32.3 \
-            beautifulsoup4==4.12.3 \
-            lxml==5.2.2 \
-            html5lib==1.1 \
-            pandas==2.2.2 \
-            playwright==1.55.0
-          python3 -m playwright install chromium
-
-      - name: Make index.html
-        shell: bash
-        run: |
-          set -euxo pipefail
-          mkdir -p public
-          cat > public/index.html <<'HTML'
-          <!doctype html><meta charset="utf-8">
-          <title>Pizarras cache</title>
-          <h1>Pizarras cache (GitHub Pages)</h1>
-          <ul>
-            <li><a href="cotizaciones_rosario.json">cotizaciones_rosario.json</a></li>
-            <li><a href="cotizaciones_bahia.json">cotizaciones_bahia.json</a></li>
-            <li><a href="cotizaciones_cordoba.json">cotizaciones_cordoba.json</a></li>
-            <li><a href="cotizaciones_quequen.json">cotizaciones_quequen.json</a></li>
-            <li><a href="cotizaciones_darsena.json">cotizaciones_darsena.json</a></li>
-            <li><a href="cotizaciones_locales.json">cotizaciones_locales.json</a></li>
-          </ul>
-          HTML
-
-      # Un pequeño jitter para no golpear siempre igual
-      - name: Random jitter
-        shell: bash
-        run: |
-          JITTER=$(( (RANDOM % 60) + 15 ))
-          echo "Sleeping ${JITTER}s…"
-          sleep "${JITTER}"
-
-      - name: Run scraper (Playwright)
-        shell: bash
+      - name: Run scraper
         env:
           SCRAPER_DRIVER: playwright
-        run: |
-          set -euxo pipefail
-          source .venv/bin/activate
-          python3 - <<'PY'
-          import os, sys, json, time
-          from pathlib import Path
-          os.environ["SCRAPER_DRIVER"] = "playwright"
-          sys.path.insert(0, "app")
-          from main import cotizaciones
-
-          def dump(plaza, only_base, tries=3):
-              Path("public").mkdir(exist_ok=True)
-              suf = "_base" if int(only_base)==1 else ""
-              fn = f"public/cotizaciones_{plaza}{suf}.json"
-              last = None
-              for i in range(tries):
-                  data = cotizaciones(plaza, only_base)
-                  last = data
-                  if data.get("items"):
-                      with open(fn, "w", encoding="utf-8") as f:
-                          json.dump(data, f, ensure_ascii=False)
-                      print(f"Wrote {fn} (items={len(data['items'])})")
-                      return
-                  time.sleep(2.0)
-              # si no hubo suerte, no pisemos un archivo válido anterior
-              if not Path(fn).exists() and last is not None:
-                  with open(fn, "w", encoding="utf-8") as f:
-                      json.dump(last, f, ensure_ascii=False)
-                  print(f"[INFO] guardé último resultado (vacío) solo para diagnóstico: {fn}")
-
-          for plaza in ["rosario","bahia","cordoba","quequen","darsena","locales"]:
-              dump(plaza, 1); time.sleep(1.0)
-              dump(plaza, 0); time.sleep(1.0)
-          print("OK")
-          PY
-
-      - name: Verify artifact contents
-        shell: bash
-        run: |
-          set -euxo pipefail
-          [ -d public ] || (echo "public/ no existe"; exit 1)
-          find public -type f -maxdepth 2 -print
-          test -n "$(find public -type f -maxdepth 2 | head -n1)"
+          PYTHONPATH: backend
+        run: python backend/scripts/scrape_to_public.py
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
@@ -133,7 +43,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ${{ github.workspace }}/public
+          path: public
 
   deploy:
     needs: build
@@ -142,6 +52,5 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
+      - id: deployment
         uses: actions/deploy-pages@v4
