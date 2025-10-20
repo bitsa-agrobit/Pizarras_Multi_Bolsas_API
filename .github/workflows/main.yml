@@ -15,9 +15,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PY_VER: '3.11'
+  PY_VER: "3.11"
 
-# ---------- JOB 1: UBUNTU ----------
+# ========= JOB 1: UBUNTU =========
 jobs:
   build-ubuntu:
     runs-on: ubuntu-22.04
@@ -68,12 +68,6 @@ jobs:
           </ul>
           HTML
 
-      - name: Random jitter
-        run: |
-          JITTER=$(( (RANDOM % 60) + 10 ))
-          echo "Sleeping ${JITTER}s…"
-          sleep "${JITTER}"
-
       - name: Run scraper (Playwright)
         env:
           SCRAPER_DRIVER: playwright
@@ -87,25 +81,26 @@ jobs:
           sys.path.insert(0, "app")
           from main import cotizaciones
 
-          outdir = Path("public"); outdir.mkdir(exist_ok=True)
+          outdir = Path("public")
+          outdir.mkdir(exist_ok=True)
+
           def dump(plaza, only_base, tries=3):
               suf = "_base" if int(only_base)==1 else ""
               fn = outdir / f"cotizaciones_{plaza}{suf}.json"
               last = None
               for _ in range(tries):
-                  data = cotizaciones(plaza, only_base); last = data
-                  if data.get("items"):
-                      fn.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8"); return True
+                  d = cotizaciones(plaza, only_base); last = d
+                  if d.get("items"):
+                      fn.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+                      return True
                   time.sleep(2)
-              # si no existía, dejo el último (para diagnóstico). Si existía, no lo piso.
               if not fn.exists() and last is not None:
                   fn.write_text(json.dumps(last, ensure_ascii=False), encoding="utf-8")
               return False
 
-          ok = True
           for p in ["rosario","bahia","cordoba","quequen","darsena","locales"]:
-              ok &= dump(p, 1); time.sleep(1)
-              ok &= dump(p, 0); time.sleep(1)
+              dump(p, 1); time.sleep(1)
+              dump(p, 0); time.sleep(1)
           print("DONE")
           PY
 
@@ -114,7 +109,7 @@ jobs:
         run: |
           set -euxo pipefail
           HAVE=$(python - <<'PY'
-          import json,glob,sys
+          import json,glob
           ok=False
           for f in glob.glob("public/cotizaciones_*.json"):
               try:
@@ -137,7 +132,7 @@ jobs:
         with:
           path: public
 
-  # ---------- JOB 2: MAC (solo si ubuntu NO tuvo datos) ----------
+# ========= JOB 2: macOS (solo si Ubuntu no tuvo datos) =========
   build-macos:
     needs: build-ubuntu
     if: needs.build-ubuntu.outputs.has_data != 'true'
@@ -147,7 +142,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: ${{ env.PY_VER }} }
+        with:
+          python-version: ${{ env.PY_VER }}
 
       - name: Setup venv & deps
         run: |
@@ -155,98 +151,4 @@ jobs:
           source .venv/bin/activate
           python -m pip install --upgrade pip
           pip install fastapi==0.115.6 requests==2.32.3 beautifulsoup4==4.12.3 \
-                     lxml==5.2.2 html5lib==1.1 pandas==2.2.2 playwright==1.55.0
-          python -m playwright install chromium
-
-      - name: Make index.html
-        run: |
-          mkdir -p public
-          cat > public/index.html <<'HTML'
-          <!doctype html><meta charset="utf-8">
-          <title>Pizarras cache</title>
-          <h1>Pizarras cache (GitHub Pages)</h1>
-          <ul>
-            <li><a href="cotizaciones_rosario.json">cotizaciones_rosario.json</a></li>
-            <li><a href="cotizaciones_bahia.json">cotizaciones_bahia.json</a></li>
-            <li><a href="cotizaciones_cordoba.json">cotizaciones_cordoba.json</a></li>
-            <li><a href="cotizaciones_quequen.json">cotizaciones_quequen.json</a></li>
-            <li><a href="cotizaciones_darsena.json">cotizaciones_darsena.json</a></li>
-            <li><a href="cotizaciones_locales.json">cotizaciones_locales.json</a></li>
-          </ul>
-          HTML
-
-      - name: Run scraper (Playwright)
-        env: { SCRAPER_DRIVER: playwright }
-        run: |
-          source .venv/bin/activate
-          python - <<'PY'
-          import os, sys, json, time
-          from pathlib import Path
-          os.environ["SCRAPER_DRIVER"] = "playwright"
-          sys.path.insert(0, "app")
-          from main import cotizaciones
-          outdir=Path("public"); outdir.mkdir(exist_ok=True)
-          def dump(plaza, only_base, tries=3):
-              suf="_base" if int(only_base)==1 else ""
-              fn=outdir/f"cotizaciones_{plaza}{suf}.json"; last=None
-              for _ in range(tries):
-                  d=cotizaciones(plaza, only_base); last=d
-                  if d.get("items"):
-                      fn.write_text(json.dumps(d,ensure_ascii=False),encoding="utf-8"); return True
-                  time.sleep(2)
-              if not fn.exists() and last is not None:
-                  fn.write_text(json.dumps(last,ensure_ascii=False),encoding="utf-8")
-              return False
-          ok=True
-          for p in ["rosario","bahia","cordoba","quequen","darsena","locales"]:
-              ok &= dump(p,1); time.sleep(1)
-              ok &= dump(p,0); time.sleep(1)
-          PY
-
-      - name: Check data presence
-        id: check
-        run: |
-          HAVE=$(python - <<'PY'
-          import json,glob
-          ok=False
-          for f in glob.glob("public/cotizaciones_*.json"):
-              try:
-                  d=json.load(open(f,encoding="utf-8"))
-                  if d.get("items"): ok=True; break
-              except: pass
-          print("true" if ok else "false")
-          PY
-          )
-          echo "has_data=$HAVE" >> $GITHUB_OUTPUT
-          echo "has_data=$HAVE"
-
-      - name: Configure Pages
-        if: steps.check.outputs.has_data == 'true'
-        uses: actions/configure-pages@v5
-
-      - name: Upload artifact (macos)
-        if: steps.check.outputs.has_data == 'true'
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: public
-
-  # ---------- JOB 3: WINDOWS (solo si macOS TAMPOCO tuvo datos) ----------
-  build-windows:
-    needs: [build-ubuntu, build-macos]
-    if: needs.build-ubuntu.outputs.has_data != 'true' && needs.build-macos.outputs.has_data != 'true'
-    runs-on: windows-latest
-    outputs:
-      has_data: ${{ steps.check.outputs.has_data }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: ${{ env.PY_VER }} }
-
-      - name: Setup venv & deps
-        shell: pwsh
-        run: |
-          python -m venv venv
-          ./venv/Scripts/Activate.ps1
-          python -m pip install --upgrade pip
-          pip install fastapi==0.115.6 requests==2.32.3 beautifulsoup4==4.12.3 `
-                     lxml==5.2.2 html5lib==1.1 pandas==2.2.2 playwright==1.55.0
+                     lxml==5.2.2 htm
