@@ -7,41 +7,73 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   build-all-json:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # Si tu pipeline YA genera cotizaciones_*.json, asumimos que ya están en el repo
-      # (en raíz o docs). Este job sólo consolida y publica.
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Generate all.json
         env:
-          # Si usás /docs como raíz de GitHub Pages, descomentar:
-          # OUTPUT_DIR: docs
-          OUTPUT_DIR: .
+          OUTPUT_DIR: .       # o 'docs' si publicás desde /docs
         run: |
           python -m pip install --upgrade pip
           chmod +x scripts/merge_json.py
           python scripts/merge_json.py
 
-      - name: Commit & Push
+      # fuerza stage aunque .gitignore ignore data/
+      - name: Stage artifacts
         run: |
+          git add -f all.json || true
+          git add -f data/ || true
+          # si usás /docs:
+          # git add -f docs/all.json || true
+          # git add -f docs/data/ || true
+
+      - name: Commit to bot branch
+        run: |
+          set -e
+          BRANCH="bot/alljson"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add all.json data/
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: publish consolidated all.json"
-            git push
+
+          if git rev-parse --verify "$BRANCH" >/dev/null 2>&1; then
+            git checkout "$BRANCH"
           else
-            echo "No changes to commit."
+            git checkout -b "$BRANCH"
           fi
 
+          git fetch origin main
+          git rebase origin/main || true
+
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: publish consolidated all.json"
+          else
+            echo "No staged changes; skipping commit."
+          fi
+
+          git push -u origin "$BRANCH" || git push -u origin "$BRANCH"
+
+      - name: Create/Update Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: bot/alljson
+          base: main
+          title: "chore: publish consolidated all.json"
+          body: |
+            Agrega/actualiza `all.json` y `data/YYYY-MM-DD/all.json`.
+            _Generado automáticamente por GitHub Actions._
+          labels: |
+            automated
+            data
+          delete-branch: false
+          draft: false
