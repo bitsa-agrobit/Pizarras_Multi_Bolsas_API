@@ -12,11 +12,11 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: true   # evita carreras en paralelo
+  cancel-in-progress: true
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest   # <-- antes: ubuntu-latest
     env:
       PYTHONPATH: app
       SCRAPER_DRIVER: playwright
@@ -71,15 +71,15 @@ jobs:
           </ul>
           HTML
 
-      # Jitter inicial para no pegarle siempre a la misma hora exacta
+      # Un pequeño jitter para no golpear siempre igual
       - name: Random jitter
         shell: bash
         run: |
-          JITTER=$(( (RANDOM % 60) + 20 ))  # 20–79s
-          echo "Sleeping ${JITTER}s before scraping..."
+          JITTER=$(( (RANDOM % 60) + 15 ))
+          echo "Sleeping ${JITTER}s…"
           sleep "${JITTER}"
 
-      - name: Run scraper (Playwright) with retries & preserve-on-fail
+      - name: Run scraper (Playwright)
         shell: bash
         env:
           SCRAPER_DRIVER: playwright
@@ -89,56 +89,33 @@ jobs:
           python3 - <<'PY'
           import os, sys, json, time
           from pathlib import Path
-          os.environ["SCRAPER_DRIVER"] = "playwright"  # no tocamos tu app
+          os.environ["SCRAPER_DRIVER"] = "playwright"
           sys.path.insert(0, "app")
           from main import cotizaciones
 
-          outdir = Path("public")
-          outdir.mkdir(exist_ok=True)
+          def dump(plaza, only_base, tries=3):
+              Path("public").mkdir(exist_ok=True)
+              suf = "_base" if int(only_base)==1 else ""
+              fn = f"public/cotizaciones_{plaza}{suf}.json"
+              last = None
+              for i in range(tries):
+                  data = cotizaciones(plaza, only_base)
+                  last = data
+                  if data.get("items"):
+                      with open(fn, "w", encoding="utf-8") as f:
+                          json.dump(data, f, ensure_ascii=False)
+                      print(f"Wrote {fn} (items={len(data['items'])})")
+                      return
+                  time.sleep(2.0)
+              # si no hubo suerte, no pisemos un archivo válido anterior
+              if not Path(fn).exists() and last is not None:
+                  with open(fn, "w", encoding="utf-8") as f:
+                      json.dump(last, f, ensure_ascii=False)
+                  print(f"[INFO] guardé último resultado (vacío) solo para diagnóstico: {fn}")
 
-          def write_if_ok(fn: Path, data: dict):
-            items = data.get("items") or []
-            if items:
-              fn.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-              print(f"Wrote {fn} (items={len(items)})")
-              return True
-            else:
-              if fn.exists():
-                print(f"[WARN] vacío => preservo {fn} existente")
-              else:
-                print(f"[WARN] vacío y no existe {fn}; no creo archivo")
-              return False
-
-          def scrape_with_retries(plaza: str, only_base: int, attempts=3, sleep_s=2.0):
-            suf = "_base" if int(only_base)==1 else ""
-            # Usamos el nombre tal como lo generabas antes
-            fn = outdir / f"cotizaciones_{plaza}{suf}.json"
-            last = None
-            for i in range(1, attempts+1):
-              try:
-                data = cotizaciones(plaza, only_base)
-                last = data
-                if write_if_ok(fn, data):
-                  return True
-                else:
-                  print(f"[TRY {i}/{attempts}] {plaza} only_base={only_base} vacío, reintento en {sleep_s}s…")
-                  time.sleep(sleep_s)
-              except Exception as e:
-                print(f"[TRY {i}/{attempts}] error {plaza} only_base={only_base}: {e} ; retry in {sleep_s}s")
-                time.sleep(sleep_s)
-            # último intento no exitoso: si no hay archivo previo, al menos dejamos el último JSON (aunque vacío) para diagnosticar
-            if not fn.exists() and last is not None:
-              fn.write_text(json.dumps(last, ensure_ascii=False), encoding="utf-8")
-              print(f"[INFO] guardé último resultado (vacío) sólo para diagnóstico: {fn}")
-            return False
-
-          plazas = ["rosario","bahia","cordoba","quequen","darsena","locales"]
-          for p in plazas:
-            scrape_with_retries(p, 1, attempts=3, sleep_s=3.0)  # base
-            time.sleep(1.5)
-            scrape_with_retries(p, 0, attempts=3, sleep_s=3.0)  # full
-            time.sleep(2.0)
-
+          for plaza in ["rosario","bahia","cordoba","quequen","darsena","locales"]:
+              dump(plaza, 1); time.sleep(1.0)
+              dump(plaza, 0); time.sleep(1.0)
           print("OK")
           PY
 
@@ -148,7 +125,6 @@ jobs:
           set -euxo pipefail
           [ -d public ] || (echo "public/ no existe"; exit 1)
           find public -type f -maxdepth 2 -print
-          # Debe existir al menos un archivo
           test -n "$(find public -type f -maxdepth 2 | head -n1)"
 
       - name: Configure Pages
