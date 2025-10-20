@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -20,7 +20,6 @@ jobs:
     env:
       PYTHONPATH: app
       SCRAPER_DRIVER: playwright
-      HOMEBREW_NO_AUTO_UPDATE: 1
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,19 +29,18 @@ jobs:
         run: |
           set -euxo pipefail
           uname -a || true
-          command -v python3
           python3 --version
           python3 -m pip --version || true
           ls -la
 
-      - name: Install deps (sin oracledb)
+      - name: Setup Python & deps (incl. Playwright + system deps)
         shell: bash
         run: |
           set -euxo pipefail
           python3 -m venv .venv
           source .venv/bin/activate
-          python3 -m pip install --upgrade pip
-          python3 -m pip install \
+          python -m pip install --upgrade pip
+          python -m pip install \
             fastapi==0.115.6 \
             requests==2.32.3 \
             beautifulsoup4==4.12.3 \
@@ -50,7 +48,9 @@ jobs:
             html5lib==1.1 \
             pandas==2.2.2 \
             playwright==1.55.0
-          python3 -m playwright install chromium
+          # Binario de Chromium + dependencias del SO para Ubuntu
+          python -m playwright install chromium
+          python -m playwright install-deps
 
       - name: Make index.html
         shell: bash
@@ -68,10 +68,11 @@ jobs:
             <li><a href="cotizaciones_quequen.json">cotizaciones_quequen.json</a></li>
             <li><a href="cotizaciones_darsena.json">cotizaciones_darsena.json</a></li>
             <li><a href="cotizaciones_locales.json">cotizaciones_locales.json</a></li>
+            <li><a href="all.json">all.json (consolidado)</a></li>
           </ul>
           HTML
 
-      - name: Run scraper (Playwright)
+      - name: Run scraper (Playwright) — genera los JSON individuales
         shell: bash
         env:
           SCRAPER_DRIVER: playwright
@@ -85,13 +86,14 @@ jobs:
           sys.path.insert(0, "app")
           from main import cotizaciones
 
+          outdir = Path("public")
+          outdir.mkdir(exist_ok=True)
+
           def dump(plaza, only_base):
               data = cotizaciones(plaza, only_base)
-              Path("public").mkdir(exist_ok=True)
               suf = "_base" if int(only_base)==1 else ""
-              fn = f"public/cotizaciones_{data['plaza']}{suf}.json"
-              with open(fn, "w", encoding="utf-8") as f:
-                  json.dump(data, f, ensure_ascii=False)
+              fn = outdir / f"cotizaciones_{data['plaza']}{suf}.json"
+              fn.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
               print(f"Wrote {fn} (items={len(data.get('items',[]))}, error={data.get('error')})")
 
           for plaza in ["rosario","bahia","cordoba","quequen","darsena","locales"]:
@@ -100,13 +102,72 @@ jobs:
           print("OK")
           PY
 
+      - name: List scraped JSONs (debug rápido)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ls -la public || true
+          echo "Total cotizaciones_*.json:"
+          ls public/cotizaciones_*.json | wc -l || true
+
+      # ======= Consolidación a all.json SIN tocar tu repo (inline) =======
+      - name: Build consolidated all.json (inline, sin cambiar tu código)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source .venv/bin/activate
+          python3 - <<'PY'
+          import json, glob, os
+          from pathlib import Path
+          from datetime import datetime, timezone
+
+          OUT = Path("public")
+          OUT.mkdir(exist_ok=True)
+          today_dir = OUT / "data" / datetime.now(timezone.utc).strftime("%Y-%m-%d")
+          today_dir.mkdir(parents=True, exist_ok=True)
+
+          items = []
+          by_plaza = {}
+          plazas = set()
+
+          def add_file(fp):
+              try:
+                  with open(fp, encoding="utf-8") as f:
+                      d = json.load(f)
+                  plaza = d.get("plaza")
+                  arr = d.get("items") or []
+                  if plaza:
+                      plazas.add(plaza)
+                      by_plaza.setdefault(plaza, []).extend(arr)
+                  items.extend(arr)
+              except Exception as e:
+                  print(f"[WARN] no pude leer {fp}: {e}")
+
+          # Tomamos todos los JSON individuales generados por tu scraper
+          for p in glob.glob("public/cotizaciones_*.json"):
+              add_file(p)
+
+          consolidated = {
+              "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "source": "Pizarras_Multi_Bolsas_API",
+              "plazas": sorted(plazas),
+              "items": items,
+              "by_plaza": by_plaza,
+          }
+
+          # Escribimos en raíz y en carpeta por fecha
+          (OUT / "all.json").write_text(json.dumps(consolidated, ensure_ascii=False), encoding="utf-8")
+          (today_dir / "all.json").write_text(json.dumps(consolidated, ensure_ascii=False), encoding="utf-8")
+          print(f"Wrote {OUT/'all.json'} and {today_dir/'all.json'} (items={len(items)})")
+          PY
+
       - name: Verify artifact contents
         shell: bash
         run: |
           set -euxo pipefail
           [ -d public ] || (echo "public/ no existe"; exit 1)
-          find public -type f -maxdepth 2 -print
-          test -n "$(find public -type f -maxdepth 2 | head -n1)"
+          test -f public/all.json
+          find public -type f -maxdepth 3 -print | sed -n '1,200p'
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
