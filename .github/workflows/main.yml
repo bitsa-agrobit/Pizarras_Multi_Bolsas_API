@@ -21,20 +21,30 @@ jobs:
       PYTHONPATH: app
       SCRAPER_DRIVER: playwright
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Python & deps
+        shell: bash
         run: |
           set -euxo pipefail
           python3 -m venv .venv
           . .venv/bin/activate
           python -m pip install --upgrade pip
-          python -m pip install fastapi==0.115.6 requests==2.32.3 beautifulsoup4==4.12.3 \
-                                 lxml==5.2.2 html5lib==1.1 pandas==2.2.2 playwright==1.55.0
+          python -m pip install \
+            fastapi==0.115.6 \
+            requests==2.32.3 \
+            beautifulsoup4==4.12.3 \
+            lxml==5.2.2 \
+            html5lib==1.1 \
+            pandas==2.2.2 \
+            playwright==1.55.0
           python -m playwright install chromium
 
       - name: Make index
+        shell: bash
         run: |
+          set -euxo pipefail
           mkdir -p public
           cat > public/index.html <<'HTML'
           <!doctype html><meta charset="utf-8">
@@ -52,6 +62,7 @@ jobs:
           HTML
 
       - name: Scrape (Playwright) → JSON individuales
+        shell: bash
         env:
           SCRAPER_DRIVER: playwright
         run: |
@@ -65,16 +76,20 @@ jobs:
           from main import cotizaciones
 
           outdir = Path("public"); outdir.mkdir(exist_ok=True)
+
           def dump(plaza, only_base):
               d = cotizaciones(plaza, only_base)
               suf = "_base" if int(only_base)==1 else ""
               fn = outdir / f"cotizaciones_{d['plaza']}{suf}.json"
               fn.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+
           for p in ["rosario","bahia","cordoba","quequen","darsena","locales"]:
-              dump(p,1); dump(p,0)
+              dump(p, 1)
+              dump(p, 0)
           PY
 
       - name: Consolidar a all.json (inline, sin tocar repo)
+        shell: bash
         run: |
           set -euxo pipefail
           . .venv/bin/activate
@@ -82,31 +97,51 @@ jobs:
           import json, glob
           from pathlib import Path
           from datetime import datetime, timezone
-          OUT=Path("public"); OUT.mkdir(exist_ok=True)
-          day=OUT/"data"/datetime.now(timezone.utc).strftime("%Y-%m-%d"); day.mkdir(parents=True, exist_ok=True)
-          items=[]; plazas=set(); by={}
+
+          OUT = Path("public"); OUT.mkdir(exist_ok=True)
+          day = OUT / "data" / datetime.now(timezone.utc).strftime("%Y-%m-%d")
+          day.mkdir(parents=True, exist_ok=True)
+
+          items = []; plazas = set(); by = {}
           for f in glob.glob("public/cotizaciones_*.json"):
               try:
-                  d=json.load(open(f,encoding="utf-8"))
-                  p=d.get("plaza"); arr=d.get("items") or []
-                  if p: plazas.add(p); by.setdefault(p,[]).extend(arr)
+                  d = json.load(open(f, encoding="utf-8"))
+                  p = d.get("plaza"); arr = d.get("items") or []
+                  if p:
+                      plazas.add(p)
+                      by.setdefault(p, []).extend(arr)
                   items.extend(arr)
-              except: pass
-          payload={"generated_at":datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                   "source":"Pizarras_Multi_Bolsas_API","plazas":sorted(plazas),
-                   "items":items,"by_plaza":by}
-          (OUT/"all.json").write_text(json.dumps(payload,ensure_ascii=False),encoding="utf-8")
-          (day/"all.json").write_text(json.dumps(payload,ensure_ascii=False),encoding="utf-8")
+              except Exception:
+                  pass
+
+          payload = {
+              "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "source": "Pizarras_Multi_Bolsas_API",
+              "plazas": sorted(plazas),
+              "items": items,
+              "by_plaza": by
+          }
+
+          (OUT / "all.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+          (day / "all.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
           PY
 
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with: { path: public }
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
 
   deploy:
     needs: build
-    runs-on: self-hosted
-    environment: { name: github-pages, url: ${{ steps.deployment.outputs.page_url }} }
+    # 👉 Para GitHub Pages, usar runner de GitHub
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - id: deployment
+      - name: Deploy to GitHub Pages
+        id: deployment
         uses: actions/deploy-pages@v4
