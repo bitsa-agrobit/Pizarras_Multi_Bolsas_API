@@ -13,23 +13,25 @@ jobs:
   build-all-json:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo (full history)
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Generate all.json
         env:
-          OUTPUT_DIR: .       # o 'docs' si publicás desde /docs
+          OUTPUT_DIR: .       # usa 'docs' si publicás desde /docs
         run: |
           python -m pip install --upgrade pip
           chmod +x scripts/merge_json.py
           python scripts/merge_json.py
 
-      # Mantener solo el stage forzado (sin commit)
+      # Forzar stage por si .gitignore ignora data/
       - name: Stage artifacts (force-add, no commit)
         run: |
           git add -f all.json || true
@@ -38,17 +40,19 @@ jobs:
           # git add -f docs/all.json || true
           # git add -f docs/data/ || true
 
-      # Usar el action con tu PAT para crear/actualizar el PR
+      # Crear/actualizar PR usando el token del workflow
       - name: Create/Update Pull Request
         uses: peter-evans/create-pull-request@v6
         with:
-          token: ${{ github.token }}   # usa el token del workflow
+          token: ${{ github.token }}
           branch: bot/alljson
           base: main
           title: "chore: publish consolidated all.json"
-          body: "..."
+          body: |
+            Agrega/actualiza:
+            - all.json
+            - data/YYYY-MM-DD/all.json
 
-      
             _Generado automáticamente por GitHub Actions._
           labels: |
             automated
