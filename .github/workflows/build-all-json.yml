@@ -29,48 +29,28 @@ jobs:
           chmod +x scripts/merge_json.py
           python scripts/merge_json.py
 
-      # fuerza stage aunque .gitignore ignore data/
-      - name: Stage artifacts
+      # Mantener solo el stage forzado (sin commit)
+      - name: Stage artifacts (force-add, no commit)
         run: |
           git add -f all.json || true
           git add -f data/ || true
-          # si usás /docs:
+          # Si usás /docs:
           # git add -f docs/all.json || true
           # git add -f docs/data/ || true
 
-      - name: Commit to bot branch
-        run: |
-          set -e
-          BRANCH="bot/alljson"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          if git rev-parse --verify "$BRANCH" >/dev/null 2>&1; then
-            git checkout "$BRANCH"
-          else
-            git checkout -b "$BRANCH"
-          fi
-
-          git fetch origin main
-          git rebase origin/main || true
-
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: publish consolidated all.json"
-          else
-            echo "No staged changes; skipping commit."
-          fi
-
-          git push -u origin "$BRANCH" || git push -u origin "$BRANCH"
-
+      # Usar el action con tu PAT para crear/actualizar el PR
       - name: Create/Update Pull Request
         uses: peter-evans/create-pull-request@v6
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.ACTIONS_PR_TOKEN }}   # tu PAT
           branch: bot/alljson
           base: main
           title: "chore: publish consolidated all.json"
           body: |
-            Agrega/actualiza `all.json` y `data/YYYY-MM-DD/all.json`.
+            Agrega/actualiza:
+            - all.json
+            - data/YYYY-MM-DD/all.json
+      
             _Generado automáticamente por GitHub Actions._
           labels: |
             automated
