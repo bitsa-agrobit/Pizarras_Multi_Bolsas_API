@@ -70,22 +70,33 @@ jobs:
           set -euxo pipefail
           source .venv/bin/activate
           python - <<'PY'
-          import os, sys, json
+          import os, sys, json, time
           from pathlib import Path
           os.environ["SCRAPER_DRIVER"] = "playwright"
           sys.path.insert(0, "app")
           from main import cotizaciones
 
           outdir = Path("public"); outdir.mkdir(exist_ok=True)
-          def dump(plaza, only_base):
-              d = cotizaciones(plaza, only_base)
+
+          def dump(plaza, only_base, tries=3):
+              last = None
               suf = "_base" if int(only_base)==1 else ""
-              (outdir / f"cotizaciones_{d['plaza']}{suf}.json").write_text(
-                  json.dumps(d, ensure_ascii=False), encoding="utf-8"
-              )
+              fn = outdir / f"cotizaciones_{plaza}{suf}.json"
+              for i in range(tries):
+                  d = cotizaciones(plaza, only_base)
+                  last = d
+                  if d.get("items"):
+                      fn.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+                      print(f"OK {fn} items={len(d['items'])}")
+                      return
+                  time.sleep(2)
+              # si nunca hubo items, igualmente escribo el último (para diagnóstico)
+              fn.write_text(json.dumps(last or {}, ensure_ascii=False), encoding="utf-8")
+              print(f"WARN vacío {fn}")
 
           for p in ["rosario","bahia","cordoba","quequen","darsena","locales"]:
-              dump(p,1); dump(p,0)
+              dump(p,1); time.sleep(1)
+              dump(p,0); time.sleep(1)
           PY
 
       - name: Build all.json (consolidate)
@@ -143,9 +154,133 @@ jobs:
         with:
           path: public
 
+  build-windows:
+    needs: build-macos
+    if: needs.build-macos.outputs.has_data != 'true'
+    runs-on: windows-latest
+    outputs:
+      has_data: ${{ steps.check.outputs.has_data }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PY_VER }}
+
+      - name: Setup venv & deps
+        shell: pwsh
+        run: |
+          python -m venv venv
+          ./venv/Scripts/Activate.ps1
+          python -m pip install --upgrade pip
+          pip install fastapi==0.115.6 requests==2.32.3 beautifulsoup4==4.12.3 `
+                     lxml==5.2.2 html5lib==1.1 pandas==2.2.2 playwright==1.55.0
+          python -m playwright install chromium
+
+      - name: Make index.html
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path public | Out-Null
+          @"
+          <!doctype html><meta charset="utf-8">
+          <title>Pizarras cache</title>
+          <h1>Pizarras cache (GitHub Pages)</h1>
+          <ul>
+            <li><a href="cotizaciones_rosario.json">cotizaciones_rosario.json</a></li>
+            <li><a href="cotizaciones_bahia.json">cotizaciones_bahia.json</a></li>
+            <li><a href="cotizaciones_cordoba.json">cotizaciones_cordoba.json</a></li>
+            <li><a href="cotizaciones_quequen.json">cotizaciones_quequen.json</a></li>
+            <li><a href="cotizaciones_darsena.json">cotizaciones_darsena.json</a></li>
+            <li><a href="cotizaciones_locales.json">cotizaciones_locales.json</a></li>
+            <li><a href="all.json">all.json (consolidado)</a></li>
+          </ul>
+          "@ | Set-Content -Encoding UTF8 public/index.html
+
+      - name: Run scraper (Playwright)
+        shell: pwsh
+        env:
+          SCRAPER_DRIVER: playwright
+        run: |
+          ./venv/Scripts/Activate.ps1
+          @"
+          import os, sys, json, time
+          from pathlib import Path
+          os.environ["SCRAPER_DRIVER"] = "playwright"
+          sys.path.insert(0, "app")
+          from main import cotizaciones
+          outdir=Path("public"); outdir.mkdir(exist_ok=True)
+          def dump(plaza, only_base, tries=3):
+              last=None
+              suf="_base" if int(only_base)==1 else ""
+              fn=outdir/f"cotizaciones_{plaza}{suf}.json"
+              for i in range(tries):
+                  d=cotizaciones(plaza,only_base); last=d
+                  if d.get("items"):
+                      fn.write_text(json.dumps(d,ensure_ascii=False),encoding="utf-8"); break
+                  time.sleep(2)
+              else:
+                  fn.write_text(json.dumps(last or {},ensure_ascii=False),encoding="utf-8")
+          for p in ["rosario","bahia","cordoba","quequen","darsena","locales"]:
+              dump(p,1); time.sleep(1)
+              dump(p,0); time.sleep(1)
+          "@ | Set-Content run.py
+          python run.py
+
+      - name: Build all.json
+        shell: pwsh
+        run: |
+          ./venv/Scripts/Activate.ps1
+          @"
+          import json, glob
+          from pathlib import Path
+          from datetime import datetime, timezone
+          OUT=Path("public"); OUT.mkdir(exist_ok=True)
+          day=OUT/"data"/datetime.now(timezone.utc).strftime("%Y-%m-%d"); day.mkdir(parents=True, exist_ok=True)
+          items=[]; plazas=set(); by={}
+          for f in glob.glob("public/cotizaciones_*.json"):
+              try:
+                  d=json.load(open(f,encoding="utf-8"))
+                  p=d.get("plaza"); arr=d.get("items") or []
+                  if p: plazas.add(p); by.setdefault(p,[]).extend(arr)
+                  items.extend(arr)
+              except: pass
+          payload={"generated_at":datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                   "source":"Pizarras_Multi_Bolsas_API","plazas":sorted(plazas),
+                   "items":items,"by_plaza":by}
+          (OUT/"all.json").write_text(json.dumps(payload,ensure_ascii=False),encoding="utf-8")
+          (day/"all.json").write_text(json.dumps(payload,ensure_ascii=False),encoding="utf-8")
+          "@ | Set-Content buildall.py
+          python buildall.py
+
+      - name: Check data presence
+        id: check
+        shell: pwsh
+        run: |
+          $ok = $false
+          Get-ChildItem public\cotizaciones_*.json | ForEach-Object {
+            try {
+              $d = Get-Content $_.FullName -Raw | ConvertFrom-Json
+              if ($d.items.Count -gt 0) { $ok = $true }
+            } catch {}
+          }
+          if ($ok) { 'has_data=true' | Out-File -FilePath $env:GITHUB_OUTPUT -Append } else { 'has_data=false' | Out-File -FilePath $env:GITHUB_OUTPUT -Append }
+          Write-Host "has_data=$ok"
+
+      - name: Configure Pages
+        if: steps.check.outputs.has_data == 'true'
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        if: steps.check.outputs.has_data == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
   deploy:
-    needs: [build-macos]
-    if: needs.build-macos.outputs.has_data == 'true'
+    needs: [build-macos, build-windows]
+    if: needs.build-macos.outputs.has_data == 'true' || needs.build-windows.outputs.has_data == 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
