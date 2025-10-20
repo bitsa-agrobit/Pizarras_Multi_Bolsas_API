@@ -1,0 +1,156 @@
+name: Daily scrape to GitHub Pages (GH-hosted backup)
+
+on:
+  schedule:
+    - cron: '25 12 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  PY_VER: "3.11"
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    outputs:
+      has_data: ${{ steps.check.outputs.has_data }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PY_VER }}
+
+      - name: Setup venv & deps
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install fastapi==0.115.6 requests==2.32.3 beautifulsoup4==4.12.3 \
+                     lxml==5.2.2 html5lib==1.1 pandas==2.2.2 playwright==1.55.0
+          python -m playwright install chromium
+
+      - name: Make index.html
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p public
+          cat > public/index.html <<'HTML'
+          <!doctype html><meta charset="utf-8">
+          <title>Pizarras cache</title>
+          <h1>Pizarras cache (GitHub Pages)</h1>
+          <ul>
+            <li><a href="cotizaciones_rosario.json">cotizaciones_rosario.json</a></li>
+            <li><a href="cotizaciones_bahia.json">cotizaciones_bahia.json</a></li>
+            <li><a href="cotizaciones_cordoba.json">cotizaciones_cordoba.json</a></li>
+            <li><a href="cotizaciones_quequen.json">cotizaciones_quequen.json</a></li>
+            <li><a href="cotizaciones_darsena.json">cotizaciones_darsena.json</a></li>
+            <li><a href="cotizaciones_locales.json">cotizaciones_locales.json</a></li>
+            <li><a href="all.json">all.json (consolidado)</a></li>
+          </ul>
+          HTML
+
+      - name: Run scraper (Playwright)
+        shell: bash
+        env:
+          SCRAPER_DRIVER: playwright
+        run: |
+          set -euxo pipefail
+          source .venv/bin/activate
+          python - <<'PY'
+          import os, sys, json
+          from pathlib import Path
+          os.environ["SCRAPER_DRIVER"] = "playwright"
+          sys.path.insert(0, "app")
+          from main import cotizaciones
+
+          outdir = Path("public"); outdir.mkdir(exist_ok=True)
+          def dump(plaza, only_base):
+              d = cotizaciones(plaza, only_base)
+              suf = "_base" if int(only_base)==1 else ""
+              (outdir / f"cotizaciones_{d['plaza']}{suf}.json").write_text(
+                  json.dumps(d, ensure_ascii=False), encoding="utf-8"
+              )
+
+          for p in ["rosario","bahia","cordoba","quequen","darsena","locales"]:
+              dump(p,1); dump(p,0)
+          PY
+
+      - name: Build all.json (consolidate)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source .venv/bin/activate
+          python - <<'PY'
+          import json, glob
+          from pathlib import Path
+          from datetime import datetime, timezone
+          OUT=Path("public"); OUT.mkdir(exist_ok=True)
+          day=OUT/"data"/datetime.now(timezone.utc).strftime("%Y-%m-%d"); day.mkdir(parents=True, exist_ok=True)
+          items=[]; plazas=set(); by={}
+          for f in glob.glob("public/cotizaciones_*.json"):
+              try:
+                  d=json.load(open(f,encoding="utf-8"))
+                  p=d.get("plaza"); arr=d.get("items") or []
+                  if p: plazas.add(p); by.setdefault(p,[]).extend(arr)
+                  items.extend(arr)
+              except: pass
+          payload={"generated_at":datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                   "source":"Pizarras_Multi_Bolsas_API","plazas":sorted(plazas),
+                   "items":items,"by_plaza":by}
+          (OUT/"all.json").write_text(json.dumps(payload,ensure_ascii=False),encoding="utf-8")
+          (day/"all.json").write_text(json.dumps(payload,ensure_ascii=False),encoding="utf-8")
+          PY
+
+      - name: Check data presence (avoid publishing empties)
+        id: check
+        shell: bash
+        run: |
+          set -euxo pipefail
+          HAVE=$(python - <<'PY'
+          import json,glob
+          ok=False
+          for f in glob.glob("public/cotizaciones_*.json"):
+              try:
+                  d=json.load(open(f,encoding="utf-8"))
+                  if d.get("items"): ok=True; break
+              except: pass
+          print("true" if ok else "false")
+          PY
+          )
+          echo "has_data=$HAVE" >> $GITHUB_OUTPUT
+          echo "has_data=$HAVE"
+
+      - name: Configure Pages
+        if: steps.check.outputs.has_data == 'true'
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        if: steps.check.outputs.has_data == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: [build-macos]
+    if: needs.build-macos.outputs.has_data == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
