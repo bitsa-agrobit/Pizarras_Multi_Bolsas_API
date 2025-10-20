@@ -1,0 +1,10 @@
+fecha,producto,precio,fuente
+03/09/2025,Soja,3950000.0,BCR – Locales
+03/09/2025,Sorgo,2230800.0,BCR – Locales
+03/09/2025,Girasol,4798800.0,BCR – Locales
+03/09/2025,Trigo,2705000.0,BCR – Locales
+03/09/2025,Maíz,2370000.0,BCR – Locales
+03/09/2025,,,"bdec_bsas: Page.goto: Timeout 60000ms exceeded.
+Call log:
+  - navigating to ""https://www.bolsadecereales.com/comercializacion"", waiting until ""networkidle""
+"
