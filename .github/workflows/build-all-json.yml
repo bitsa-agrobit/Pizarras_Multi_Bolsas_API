@@ -7,16 +7,16 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   build-all-json:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
+      - name: Checkout repo (full history)
         uses: actions/checkout@v4
-
-      # Si tu pipeline YA genera cotizaciones_*.json, asumimos que ya están en el repo
-      # (en raíz o docs). Este job sólo consolida y publica.
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -25,23 +25,37 @@ jobs:
 
       - name: Generate all.json
         env:
-          # Si usás /docs como raíz de GitHub Pages, descomentar:
-          # OUTPUT_DIR: docs
-          OUTPUT_DIR: .
+          OUTPUT_DIR: .       # usa 'docs' si publicás desde /docs
         run: |
           python -m pip install --upgrade pip
           chmod +x scripts/merge_json.py
           python scripts/merge_json.py
 
-      - name: Commit & Push
+      # Forzar stage por si .gitignore ignora data/
+      - name: Stage artifacts (force-add, no commit)
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add all.json data/
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: publish consolidated all.json"
-            git push
-          else
-            echo "No changes to commit."
-          fi
+          git add -f all.json || true
+          git add -f data/ || true
+          # Si usás /docs:
+          # git add -f docs/all.json || true
+          # git add -f docs/data/ || true
 
+      # Crear/actualizar PR usando el token del workflow
+      - name: Create/Update Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ github.token }}
+          branch: bot/alljson
+          base: main
+          title: "chore: publish consolidated all.json"
+          body: |
+            Agrega/actualiza:
+            - all.json
+            - data/YYYY-MM-DD/all.json
+
+            _Generado automáticamente por GitHub Actions._
+          labels: |
+            automated
+            data
+          delete-branch: false
+          draft: false

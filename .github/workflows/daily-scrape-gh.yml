@@ -78,7 +78,7 @@ jobs:
           set -euxo pipefail
           source .venv/bin/activate
           python - <<'PY'
-          import os, sys, json, time, random
+          import os, sys, json, time
           from pathlib import Path
           os.environ["SCRAPER_DRIVER"] = "playwright"
           sys.path.insert(0, "app")
@@ -86,8 +86,7 @@ jobs:
 
           outdir = Path("public"); outdir.mkdir(exist_ok=True)
 
-          def dump(plaza, only_base, tries=10):
-              """Reintenta con backoff exponencial suave y jitter."""
+          def dump(plaza, only_base, tries=3):
               last = None
               suf = "_base" if int(only_base)==1 else ""
               fn = outdir / f"cotizaciones_{plaza}{suf}.json"
@@ -96,17 +95,16 @@ jobs:
                   last = d
                   if d.get("items"):
                       fn.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
-                      print(f"OK {fn} items={len(d['items'])} (try {i+1}/{tries})")
+                      print(f"OK {fn} items={len(d['items'])}")
                       return
-                  delay = min(2 + int(1.5**i), 20) + random.random()
-                  print(f"EMPTY {plaza} base={only_base} (try {i+1}/{tries}) sleep {delay:.1f}s")
-                  time.sleep(delay)
+                  time.sleep(2)
+              # si nunca hubo items, igualmente escribo el último (para diagnóstico)
               fn.write_text(json.dumps(last or {}, ensure_ascii=False), encoding="utf-8")
-              print(f"WARN vacío {fn} tras {tries} intentos")
+              print(f"WARN vacío {fn}")
 
           for p in ["rosario","bahia","cordoba","quequen","darsena","locales"]:
-              dump(p,1); time.sleep(1.0)
-              dump(p,0); time.sleep(1.0)
+              dump(p,1); time.sleep(1)
+              dump(p,0); time.sleep(1)
           PY
 
       - name: Build all.json (consolidate)
@@ -208,13 +206,6 @@ jobs:
           </ul>
           "@ | Set-Content -Encoding UTF8 public/index.html
 
-      - name: Random jitter
-        shell: pwsh
-        run: |
-          $rnd = Get-Random -Minimum 60 -Maximum 180
-          Write-Host "Sleeping $rnd s…"
-          Start-Sleep -Seconds $rnd
-
       - name: Run scraper (Playwright)
         shell: pwsh
         env:
@@ -222,29 +213,23 @@ jobs:
         run: |
           ./venv/Scripts/Activate.ps1
           @"
-          import os, sys, json, time, random
+          import os, sys, json, time
           from pathlib import Path
           os.environ["SCRAPER_DRIVER"] = "playwright"
           sys.path.insert(0, "app")
           from main import cotizaciones
           outdir=Path("public"); outdir.mkdir(exist_ok=True)
-
-          def dump(plaza, only_base, tries=10):
+          def dump(plaza, only_base, tries=3):
               last=None
               suf="_base" if int(only_base)==1 else ""
               fn=outdir/f"cotizaciones_{plaza}{suf}.json"
               for i in range(tries):
                   d=cotizaciones(plaza,only_base); last=d
                   if d.get("items"):
-                      fn.write_text(json.dumps(d,ensure_ascii=False),encoding="utf-8")
-                      print(f"OK {fn} items="+str(len(d['items']))+f" (try {i+1}/{tries})")
-                      return
-                  delay=min(2+int(1.5**i),20)+random.random()
-                  print(f"EMPTY {plaza} base={only_base} (try {i+1}/{tries}) sleep {delay:.1f}s")
-                  time.sleep(delay)
-              fn.write_text(json.dumps(last or {},ensure_ascii=False),encoding="utf-8")
-              print(f"WARN vacío {fn} tras {tries} intentos")
-
+                      fn.write_text(json.dumps(d,ensure_ascii=False),encoding="utf-8"); break
+                  time.sleep(2)
+              else:
+                  fn.write_text(json.dumps(last or {},ensure_ascii=False),encoding="utf-8")
           for p in ["rosario","bahia","cordoba","quequen","darsena","locales"]:
               dump(p,1); time.sleep(1)
               dump(p,0); time.sleep(1)
