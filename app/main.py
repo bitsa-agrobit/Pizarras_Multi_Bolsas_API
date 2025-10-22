@@ -40,6 +40,9 @@ from datetime import datetime
 APP_TITLE = "Pizarras Granos API"
 SOURCE_URL = "https://www.bolsadecereales.com/camara-arbitral"
 
+CLOUD_MODE = os.getenv("CLOUD_MODE", "0") == "1"
+USE_DB = os.getenv("DEV_SKIP_DB", "1") != "1"
+
 app = FastAPI(title=APP_TITLE)
 
 app.add_middleware(
@@ -86,12 +89,25 @@ def http_get(url: str, **kwargs) -> requests.Response:
     timeout = kwargs.pop("timeout", 20)
     resp = _SESSION.get(url, timeout=timeout, **kwargs)
     if resp.status_code == 403:
-        # cambia el UA y reintenta una vez
+        # cambia UA y reintenta una vez
         _SESSION.headers["User-Agent"] = (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
         resp = _SESSION.get(url, timeout=timeout, **kwargs)
+        if resp.status_code == 403 and httpx is not None:
+            # Fallback HTTP/2 con los mismos headers
+            with httpx.Client(http2=True, headers=_SESSION.headers, timeout=timeout, follow_redirects=True) as hx:
+                r2 = hx.get(url)
+                r2.raise_for_status()
+                # Adaptar a una interfaz tipo requests.Response básica
+                class _R:
+                    status_code = r2.status_code
+                    text = r2.text
+                    content = r2.content
+                    headers = r2.headers
+                    url = str(r2.url)
+                return _R()
     resp.raise_for_status()
     return resp
 # --- fin HTTP client ---
