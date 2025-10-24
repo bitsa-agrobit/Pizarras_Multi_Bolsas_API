@@ -18,7 +18,7 @@ jobs:
   build:
     runs-on: [self-hosted, pizarras]
     outputs:
-      has_data: ${{ steps.check.outputs.has_data }}   # 👈 NECESARIO
+      has_data: ${{ steps.check.outputs.has_data }}   # expone el resultado del step "check"
     env:
       PYTHONPATH: app
       SCRAPER_DRIVER: playwright
@@ -71,7 +71,7 @@ jobs:
           set -euxo pipefail
           . .venv/bin/activate
           python - <<'PY'
-          import os, sys, json
+          import os, sys, json, time
           from pathlib import Path
           os.environ["SCRAPER_DRIVER"] = "playwright"
           sys.path.insert(0, "app")
@@ -79,15 +79,23 @@ jobs:
 
           outdir = Path("public"); outdir.mkdir(exist_ok=True)
 
-          def dump(plaza, only_base):
-              d = cotizaciones(plaza, only_base)
-              suf = "_base" if int(only_base)==1 else ""
-              fn = outdir / f"cotizaciones_{d['plaza']}{suf}.json"
-              fn.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+          def dump(plaza, only_base, tries=3):
+            last=None
+            suf = "_base" if int(only_base)==1 else ""
+            fn = outdir / f"cotizaciones_{plaza}{suf}.json"
+            for _ in range(tries):
+              d = cotizaciones(plaza, only_base); last=d
+              if d.get("items"):
+                fn.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+                print(f"OK {fn} items={len(d['items'])}")
+                return
+              time.sleep(2)
+            fn.write_text(json.dumps(last or {}, ensure_ascii=False), encoding="utf-8")
+            print(f"WARN vacío {fn}")
 
           for p in ["rosario","bahia","cordoba","quequen","darsena","locales"]:
-              dump(p, 1)
-              dump(p, 0)
+            dump(p, 1); time.sleep(1)
+            dump(p, 0); time.sleep(1)
           PY
 
       - name: Consolidar a all.json (inline, sin tocar repo)
@@ -128,6 +136,26 @@ jobs:
           (day / "all.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
           PY
 
+      # 🔎 NUEVO: step que calcula has_data y lo expone como output del job
+      - name: Check data presence (avoid publishing empties)
+        id: check
+        shell: bash
+        run: |
+          set -euxo pipefail
+          HAVE=$(python - <<'PY'
+          import json,glob
+          ok=False
+          for f in glob.glob("public/cotizaciones_*.json"):
+              try:
+                  d=json.load(open(f,encoding="utf-8"))
+                  if d.get("items"): ok=True; break
+              except: pass
+          print("true" if ok else "false")
+          PY
+          )
+          echo "has_data=$HAVE" >> $GITHUB_OUTPUT
+          echo "has_data=$HAVE"
+
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
@@ -147,4 +175,3 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-
