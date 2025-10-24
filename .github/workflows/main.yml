@@ -168,7 +168,6 @@ jobs:
 
   deploy:
     needs: build
-    if: needs.build.outputs.has_data == 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
