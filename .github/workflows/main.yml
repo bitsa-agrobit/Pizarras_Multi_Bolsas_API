@@ -17,6 +17,8 @@ concurrency:
 jobs:
   build:
     runs-on: [self-hosted, pizarras]
+    outputs:
+      has_data: ${{ steps.check.outputs.has_data }}   # 👈 NECESARIO
     env:
       PYTHONPATH: app
       SCRAPER_DRIVER: playwright
