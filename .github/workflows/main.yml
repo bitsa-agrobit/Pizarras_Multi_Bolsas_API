@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: self-hosted
+    runs-on: [self-hosted, macOS]
     env:
       PYTHONPATH: app
       SCRAPER_DRIVER: playwright
