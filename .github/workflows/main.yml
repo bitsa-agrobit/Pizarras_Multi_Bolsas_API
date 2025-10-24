@@ -136,7 +136,7 @@ jobs:
 
   deploy:
     needs: build
-    # 👉 Para GitHub Pages, usar runner de GitHub
+    if: needs.build.outputs.has_data == 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -145,3 +145,4 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
