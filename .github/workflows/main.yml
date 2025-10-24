@@ -18,7 +18,7 @@ jobs:
   build:
     runs-on: [self-hosted, pizarras]
     outputs:
-      has_data: ${{ steps.check.outputs.has_data }}   # expone el resultado del step "check"
+      has_data: ${{ steps.check.outputs.has_data }}
     env:
       PYTHONPATH: app
       SCRAPER_DRIVER: playwright
@@ -136,24 +136,26 @@ jobs:
           (day / "all.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
           PY
 
-      # 🔎 NUEVO: step que calcula has_data y lo expone como output del job
       - name: Check data presence (avoid publishing empties)
         id: check
         shell: bash
         run: |
           set -euxo pipefail
-          HAVE=$(python - <<'PY'
+          HAVE=$(.venv/bin/python - <<'PY'
           import json,glob
           ok=False
           for f in glob.glob("public/cotizaciones_*.json"):
               try:
                   d=json.load(open(f,encoding="utf-8"))
-                  if d.get("items"): ok=True; break
-              except: pass
+                  if d.get("items"):
+                      ok=True
+                      break
+              except:
+                  pass
           print("true" if ok else "false")
           PY
           )
-          echo "has_data=$HAVE" >> $GITHUB_OUTPUT
+          echo "has_data=$HAVE" >> "$GITHUB_OUTPUT"
           echo "has_data=$HAVE"
 
       - name: Configure Pages
