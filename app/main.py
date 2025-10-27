@@ -21,7 +21,11 @@ if __package__ in (None, ""):
     import os, sys
     sys.path.insert(0, os.path.dirname(__file__))
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Depends
+try:
+    from .security import api_guard
+except ImportError:  # running as a module (no package context)
+    from security import api_guard
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from typing import Dict, Any, List, Optional, Tuple
@@ -44,6 +48,36 @@ CLOUD_MODE = os.getenv("CLOUD_MODE", "0") == "1"
 USE_DB = os.getenv("DEV_SKIP_DB", "1") != "1"
 
 app = FastAPI(title=APP_TITLE)
+
+# --- API Key Global Middleware (guards /api/* except health endpoints) ---
+import os
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
+
+class ApiKeyMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app):
+        super().__init__(app)
+        self.require = os.getenv("REQUIRE_API_KEY", "0") == "1"
+        self.api_key = os.getenv("API_KEY")
+
+    async def dispatch(self, request, call_next):
+        if not self.require:
+            return await call_next(request)
+        path = request.url.path
+        # Only protect /api/* (leave /, /docs, static, etc. untouched)
+        if not path.startswith("/api"):
+            return await call_next(request)
+        # Allowlist: leave health checks open
+        if path in ("/api/health", "/api/health/oracle"):
+            return await call_next(request)
+        key = request.headers.get("X-API-Key")
+        if not self.api_key or key != self.api_key:
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        return await call_next(request)
+
+# Register middleware once the app is created
+app.add_middleware(ApiKeyMiddleware)
+# --- end middleware ---
 
 app.add_middleware(
     CORSMiddleware,
@@ -390,7 +424,7 @@ def scrape_plaza(plaza_norm: str) -> List[Dict[str, Any]]:
 def health() -> Dict[str, Any]:
     return {"ok": True, "service": APP_TITLE, "ts": time.time()}
 
-@app.get("/api/cotizaciones")
+@app.get("/api/cotizaciones", dependencies=[Depends(api_guard)])
 def cotizaciones(
     plaza: str = Query("rosario"),
     only_base: int = Query(1),
