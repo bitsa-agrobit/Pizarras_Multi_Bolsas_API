@@ -1,0 +1,21 @@
+--- a/app/main.py
++++ b/app/main.py
+@@ -21,7 +21,8 @@
+     import os, sys
+     sys.path.insert(0, os.path.dirname(__file__))
+ 
+-from fastapi import FastAPI, Query
++from fastapi import FastAPI, Query, Depends
++from .security import api_guard
+ from fastapi.middleware.cors import CORSMiddleware
+ from fastapi.responses import StreamingResponse, JSONResponse
+ from typing import Dict, Any, List, Optional, Tuple
+@@ -390,7 +391,7 @@
+ def health() -> Dict[str, Any]:
+     return {"ok": True, "service": APP_TITLE, "ts": time.time()}
+ 
+-@app.get("/api/cotizaciones")
++@app.get("/api/cotizaciones", dependencies=[Depends(api_guard)])
+ def cotizaciones(
+     plaza: str = Query("rosario"),
+     only_base: int = Query(1),

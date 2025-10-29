@@ -1,3 +1,4 @@
+import './apikey-fetch-hook';
 import './index.css'; // ⬅️ MUY IMPORTANTE (al tope)
 
 import React from 'react';

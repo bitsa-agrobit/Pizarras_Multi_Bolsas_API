@@ -1,0 +1,18 @@
+{
+  "blocks": [
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*📊 Mini-log 2025-10-27*"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "```rosario: OK  – items: 15 – t: 2.1s\nbahia_blanca: OK – items: 12 – t: 1.8s\nlocales: ERROR – items: 0 – t: 0.5s```"
+      }
+    }
+  ]
+}

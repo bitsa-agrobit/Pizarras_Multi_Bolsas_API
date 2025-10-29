@@ -9,19 +9,19 @@
 #   - GET  /api/powerbi/cotizaciones?plaza=<plaza>&only_base=1  (JSON para Power BI)
 #
 # Cambios "quirúrgicos" (esta versión):
-# - Se agrega router /internal con protección Bearer (sin tocar /api/*).
-# - /internal/scrape/fallback: fuerza scraping (sin cache previa) y devuelve items.
-# - /internal/cache/publish: stub {"ok": true} (para orquestación n8n; reemplazable por publisher real).
-# - /internal/oracle/export: reusa export_oracle().
-# - /internal/cotizaciones: reusa cotizaciones().
-# - /internal/tipo_cambio: 501 (este proyecto no implementa tipo de cambio).
+# - Exportación Oracle: mapeo de granos a códigos reales Oracle (10,200,210,220,230).
+# - Validación previa contra <ORACLE_SCHEMA>.GRANO (si el código no existe, se omite).
+# - UVALUE: hash <= 16 dígitos (evita ORA-01438).
+# - Conteo de "already_present" (no inserta por existir) usando rowcount del MERGE.
+# - Endpoint /api/powerbi/cotizaciones (JSON simple, apto Power BI).
+# - Sin cambios en scraping/normalizaciones existentes.
 
 # --- serverless import fix (permite "import config/db/normalizer/scrapers" desde app/) ---
 if __package__ in (None, ""):
     import os, sys
     sys.path.insert(0, os.path.dirname(__file__))
 
-from fastapi import FastAPI, Query, Depends, APIRouter, Header, HTTPException
+from fastapi import FastAPI, Query, Depends
 try:
     from .security import api_guard
 except ImportError:  # running as a module (no package context)
@@ -29,9 +29,9 @@ except ImportError:  # running as a module (no package context)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from typing import Dict, Any, List, Optional, Tuple
-#import requests
+import requests
 import re
-#import time
+import time
 import unicodedata
 from bs4 import BeautifulSoup
 import threading
@@ -41,11 +41,6 @@ import os
 import hashlib
 from datetime import datetime
 
-# --- HTTP client con headers "de navegador" + fallback HTTP/2 con httpx ---
-import requests
-import random
-import time
-
 APP_TITLE = "Pizarras Granos API"
 SOURCE_URL = "https://www.bolsadecereales.com/camara-arbitral"
 
@@ -54,13 +49,10 @@ USE_DB = os.getenv("DEV_SKIP_DB", "1") != "1"
 
 app = FastAPI(title=APP_TITLE)
 
-# Toggle dinámico para el guard público según env
-_REQUIRE_API_KEY = os.getenv("REQUIRE_API_KEY", "0") == "1"
-_public_deps = [Depends(api_guard)] if _REQUIRE_API_KEY else []
-
 # --- API Key Global Middleware (guards /api/* except health endpoints) ---
+import os
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import JSONResponse as StarletteJSONResponse
+from starlette.responses import JSONResponse
 
 class ApiKeyMiddleware(BaseHTTPMiddleware):
     def __init__(self, app):
@@ -80,7 +72,7 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         key = request.headers.get("X-API-Key")
         if not self.api_key or key != self.api_key:
-            return StarletteJSONResponse({"detail": "Unauthorized"}, status_code=401)
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
         return await call_next(request)
 
 # Register middleware once the app is created
@@ -108,7 +100,7 @@ def health_oracle():
             {"status": "error", "detail": f"{type(ex).__name__}: {ex}"},
             status_code=500
         )
-
+    
 # --- HTTP client con headers "de navegador" para evitar 403 ---
 import requests
 
@@ -121,95 +113,38 @@ BROWSER_HEADERS = {
     "Connection": "keep-alive",
     "Upgrade-Insecure-Requests": "1",
     "DNT": "1",
-    "Accept-Encoding": "gzip, deflate, br",
 }
-
-_UAS = [
-    # rotamos un par de UAs “creíbles”
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-]
 
 _SESSION = requests.Session()
 _SESSION.headers.update(BROWSER_HEADERS)
 
 def http_get(url: str, **kwargs) -> requests.Response:
-    """GET con headers de navegador; si 403 → intenta HTTP/2 con httpx y UA alternativo."""
+    """GET con headers de navegador + fallback de UA si hay 403."""
     timeout = kwargs.pop("timeout", 20)
-    headers = dict(_SESSION.headers)
-    headers.update(kwargs.pop("headers", {}))
-
-    # 1° intento: requests
-    resp = _SESSION.get(url, timeout=timeout, headers=headers, **kwargs)
-    if resp.status_code != 403:
-        resp.raise_for_status()
-        return resp
-
-    # Pequeño backoff aleatorio (evita patrones)
-    time.sleep(0.5 + random.random() * 0.7)
-
-    # 2° intento: requests con UA alternativo
-    alt_headers = dict(headers)
-    alt_headers["User-Agent"] = random.choice(_UAS)
-    resp2 = _SESSION.get(url, timeout=timeout, headers=alt_headers, **kwargs)
-    if resp2.status_code != 403:
-        resp2.raise_for_status()
-        return resp2
-
-    # 3° intento: httpx HTTP/2
-    try:
-        import httpx
-        with httpx.Client(http2=True, headers=alt_headers, timeout=timeout, follow_redirects=True) as hx:
-            r3 = hx.get(url)
-            r3.raise_for_status()
-            # Adaptamos a interfaz mínima de requests.Response
-            class _ShimResp:
-                status_code = r3.status_code
-                text = r3.text
-                content = r3.content
-                headers = r3.headers
-                url = str(r3.url)
-            return _ShimResp()
-    except Exception as _:
-        # si httpx falla, levantamos el 403 original
-        resp2.raise_for_status()
-        return resp2
-    
-# --- Fallback con navegador real (Playwright) en modo asíncrono ---
-async def fetch_html_browser_async(
-    url: str,
-    wait_selector: str = "div.titulo-tabla",
-    timeout_ms: int = 15000
-) -> str:
-    try:
-        from playwright.async_api import async_playwright
-    except Exception as ex:
-        raise RuntimeError(f"PlaywrightUnavailable: {type(ex).__name__}: {ex}")
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=[
-            "--disable-blink-features=AutomationControlled",
-            "--no-sandbox",
-            "--disable-gpu",
-        ])
-        ctx = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) "
-                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
-            ),
-            locale="es-AR",
+    resp = _SESSION.get(url, timeout=timeout, **kwargs)
+    if resp.status_code == 403:
+        # cambia UA y reintenta una vez
+        _SESSION.headers["User-Agent"] = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
-        page = await ctx.new_page()
-        page.set_default_timeout(timeout_ms)
-        await page.goto(url, wait_until="domcontentloaded")
-        try:
-            await page.wait_for_selector(wait_selector, state="visible", timeout=timeout_ms)
-        except Exception:
-            pass
-        html = await page.content()
-        await ctx.close()
-        await browser.close()
-        return html  
+        resp = _SESSION.get(url, timeout=timeout, **kwargs)
+        if resp.status_code == 403 and httpx is not None:
+            # Fallback HTTP/2 con los mismos headers
+            with httpx.Client(http2=True, headers=_SESSION.headers, timeout=timeout, follow_redirects=True) as hx:
+                r2 = hx.get(url)
+                r2.raise_for_status()
+                # Adaptar a una interfaz tipo requests.Response básica
+                class _R:
+                    status_code = r2.status_code
+                    text = r2.text
+                    content = r2.content
+                    headers = r2.headers
+                    url = str(r2.url)
+                return _R()
+    resp.raise_for_status()
+    return resp
+# --- fin HTTP client ---
 
 # ---------------------------
 # Utilidades de normalización
@@ -249,7 +184,10 @@ def fetch_html(url: str, timeout: int = 25) -> str:
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/126.0.0.0 Safari/537.36"
         ),
+        "Accept-Language": "es-AR,es;q=0.9",
+        "Cache-Control": "no-cache",
     }
+    #resp = requests.get(url, headers=headers, timeout=timeout)
     resp = http_get(url, headers=headers, timeout=timeout)
     resp.raise_for_status()
     return resp.text
@@ -259,10 +197,11 @@ def _clean_num(val: str) -> Optional[float]:
     Limpia símbolos y espacios raros. Soporta:
       "$ 275.730", "u$s 275.730", "ARS 275.730", "275.730,00", "275,730.00"
     """
-    s = (val or "").strip().lower()
-    if s in ("s/c", "sc", "s / c", "-", ""):
+    s = (val or "").strip()
+    s_low = s.lower()
+    if s_low in ("s/c", "sc", "s / c", "-", ""):
         return None
-    s = (val or "").replace("\xa0", " ").replace("\u2009", " ").replace("\u202f", " ")
+    s = s.replace("\xa0", " ").replace("\u2009", " ").replace("\u202f", " ")
     s = re.sub(r"\s+", " ", s)
     s = re.sub(r"[^0-9,.\-]", "", s)
     if "," in s and "." in s:
@@ -344,9 +283,7 @@ def _detect_currency(table_tag: BeautifulSoup, default_currency: str) -> str:
     header_text = ""
     thead = table_tag.find("thead")
     if thead:
-        tr = thead.find("tr")
-        if tr:
-            header_text = tr.get_text(" ", strip=True)
+        header_text = thead.get_text(" ", strip=True)
     else:
         first_tr = table_tag.find("tr")
         if first_tr:
@@ -457,69 +394,10 @@ def _parse_table(table_tag: BeautifulSoup, forced_currency: Optional[str], order
         norm_items.append({**it, "producto": key})
     return norm_items
 
-def _parse_plaza_from_html(html: str, plaza_norm: str) -> List[Dict[str, Any]]:
-    soup = BeautifulSoup(html, "html.parser")
-    label_map = {
-        "rosario": "Rosario",
-        "bahia": "Bahía Blanca",
-        "cordoba": "Córdoba",
-        "quequen": "Quequén",
-        "darsena": "Dársena",
-    }
-    titulo_text = label_map.get(plaza_norm, "Rosario")
-    tables = _find_plaza_tables(soup, titulo_text)
-    if not tables:
-        return []
-    items: List[Dict[str, Any]] = []
-    for idx, tbl in enumerate(tables):
-        currency = _detect_currency(tbl, default_currency=("ARS" if idx == 0 else "USD"))
-        items += _parse_table(tbl, forced_currency=currency, order_idx=idx)
-    return items
-
-def fetch_html_browser(url: str, wait_selector: str = "div.titulo-tabla", timeout_ms: int = 15000) -> str:
-    """
-    Renderiza la página con Chromium headless y devuelve el HTML final.
-    Se usa sólo como fallback, porque es más pesado que requests/httpx.
-    """
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception as ex:
-        raise RuntimeError(f"PlaywrightUnavailable: {type(ex).__name__}: {ex}")
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=[
-            "--disable-blink-features=AutomationControlled",
-            "--no-sandbox",
-            "--disable-gpu",
-        ])
-        ctx = browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) "
-                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
-            ),
-            locale="es-AR",
-        )
-        page = ctx.new_page()
-        page.set_default_timeout(timeout_ms)
-        page.goto(url, wait_until="domcontentloaded")
-        try:
-            page.wait_for_selector(wait_selector, state="visible", timeout=timeout_ms)
-        except Exception:
-            pass  # si no aparece el selector, igual devolvemos lo que haya
-        html = page.content()
-        ctx.close()
-        browser.close()
-        return html
-
-
 def scrape_plaza(plaza_norm: str) -> List[Dict[str, Any]]:
-    # Nota: este método usa sólo requests/httpx (rápido).
-    # Si Cloudflare bloquea (403) y devuelve vacío, usar /internal/scrape/fallback,
-    # que invoca Playwright y rellena cache.
     if plaza_norm == "locales":
         return []
     html = fetch_html(SOURCE_URL)
-    #html = fetch_html_browser_async(SOURCE_URL)
     soup = BeautifulSoup(html, "html.parser")
     label_map = {
         "rosario": "Rosario",
@@ -546,7 +424,7 @@ def scrape_plaza(plaza_norm: str) -> List[Dict[str, Any]]:
 def health() -> Dict[str, Any]:
     return {"ok": True, "service": APP_TITLE, "ts": time.time()}
 
-@app.get("/api/cotizaciones", dependencies=_public_deps)
+@app.get("/api/cotizaciones", dependencies=[Depends(api_guard)])
 def cotizaciones(
     plaza: str = Query("rosario"),
     only_base: int = Query(1),
@@ -559,48 +437,14 @@ def cotizaciones(
         return {"items": cached, "plaza": plaza_norm, "source_url": SOURCE_URL, "cached": True}
 
     try:
-        # 1) Intento rápido (requests/httpx)
         items = scrape_plaza(plaza_norm)
-
-        browser_used = False
-        # 2) Si vino vacío y está habilitado USE_PLAYWRIGHT → usar navegador real (sync)
-        if (not items) and os.getenv("USE_PLAYWRIGHT", "false").lower() in ("1","true","yes"):
-            try:
-                html2 = fetch_html_browser(SOURCE_URL)  # <- versión síncrona
-                items = _parse_plaza_from_html(html2, plaza_norm)
-                browser_used = True
-            except Exception:
-                pass
-
-
         if int(only_base) == 1:
             items = [it for it in items if not _looks_like_future(it.get("producto", ""))]
-
-        if items:
-            _cache_set(cache_key, items)
-
-        return {
-            "items": items,
-            "plaza": plaza_norm,
-            "source_url": SOURCE_URL,
-            "cached": False,
-            **({"warning": "browser_fallback_used"} if browser_used else {}),
-        }
-    #except requests.Timeout:
-    #    return {"items": [], "plaza": plaza_norm, "source_url": SOURCE_URL, "error": "timeout"}
-    #except Exception as ex:
-    #    return {"items": [], "plaza": plaza_norm, "source_url": SOURCE_URL, "error": f"{type(ex).__name__}: {ex}"}
-    #DR 29-10-2025 Ahora:
+        _cache_set(cache_key, items)
+        return {"items": items, "plaza": plaza_norm, "source_url": SOURCE_URL, "cached": False}
     except requests.Timeout:
-        # si hay cache previa, la devolvemos
-        cached = _cache_get(cache_key)
-        if cached is not None:
-            return {"items": cached, "plaza": plaza_norm, "source_url": SOURCE_URL, "cached": True, "warning": "timeout_using_cache"}
         return {"items": [], "plaza": plaza_norm, "source_url": SOURCE_URL, "error": "timeout"}
     except Exception as ex:
-        cached = _cache_get(cache_key)
-        if cached is not None:
-            return {"items": cached, "plaza": plaza_norm, "source_url": SOURCE_URL, "cached": True, "warning": f"fallback_cache_due_to_{type(ex).__name__}"}
         return {"items": [], "plaza": plaza_norm, "source_url": SOURCE_URL, "error": f"{type(ex).__name__}: {ex}"}
 
 # ---------------------------
@@ -844,114 +688,7 @@ def powerbi_cotizaciones(
             "fuente": SOURCE_URL,
         })
     return {"ok": True, "count": len(data), "items": data, "plaza": plaza_norm}
-
-# ============================================================
-#               NUEVO: Router protegido /internal/*
-# ============================================================
-
-# 1) Guardia Bearer (variable de entorno: API_TOKEN)
-API_TOKEN = os.getenv("API_TOKEN", "").strip()
-
-import logging
-logging.getLogger("uvicorn").info(f"[debug] API_TOKEN length loaded: {len(API_TOKEN)}")
-
-async def require_bearer(authorization: str = Header(default="")):
-    if not API_TOKEN:
-        raise HTTPException(status_code=500, detail="Server misconfigured: API_TOKEN missing")
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing Bearer")
-    token = authorization.split(" ", 1)[1].strip()
-    if token != API_TOKEN:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-internal = APIRouter(dependencies=[Depends(require_bearer)], tags=["internal"])
-
-@internal.get("/cotizaciones")
-async def cotizaciones_internal(plaza: str = Query("rosario"), only_base: int = Query(1)):
-    # Reusa la lógica del handler público sin exigir api_guard (se protege por Bearer)
-    return cotizaciones(plaza=plaza, only_base=only_base)
-
-@internal.post("/scrape/fallback")
-async def scrape_fallback_internal(payload: Dict[str, Any]):
-    """
-    Fuerza scraping directo para 'plaza' y devuelve el mismo schema de /api/cotizaciones.
-    1) Intenta requests/httpx (rápido).
-    2) Si viene vacío o falla, intenta Playwright (navegador real).
-    3) Si obtiene datos, los cachea con la misma clave que /api/cotizaciones.
-    """
-    plaza = payload.get("plaza", "rosario")
-    only_base = int(payload.get("only_base", 1))
-    plaza_norm, _ = normalize_plaza(plaza)
-    cache_key = f"{plaza_norm}|ob={int(only_base==1)}"
-
-    try:
-        # 1) intento: rápido (requests/httpx)
-        items = scrape_plaza(plaza_norm)
-    except Exception as ex1:
-        items = []
-        err1 = f"{type(ex1).__name__}: {ex1}"
-    else:
-        err1 = None
-
-    # Filtrado base si hubo items
-    if items and only_base == 1:
-        items = [it for it in items if not _looks_like_future(it.get("producto", ""))]
-
-    used_browser = False
-    # 2) si seguimos vacíos, intentar navegador real
-    if not items:
-        try:
-            html2 = await fetch_html_browser_async(SOURCE_URL)  # <- versión async + await
-            items = _parse_plaza_from_html(html2, plaza_norm)
-            if only_base == 1:
-                items = [it for it in items if not _looks_like_future(it.get("producto", ""))]
-            used_browser = True
-        except Exception as ex2:
-            return JSONResponse(
-                {
-                    "items": [],
-                    "plaza": plaza_norm,
-                    "source_url": SOURCE_URL,
-                    "fallback": True,
-                    "error": f"fallback_failed: {err1 or 'no_err_first'} | {type(ex2).__name__}: {ex2}",
-                },
-                status_code=502
-            )
-
-    # 3) si hay datos, cachearlos para que /api/* pueda servirlos luego
-    if items:
-        _cache_set(cache_key, items)
-
-    return {
-        "items": items,
-        "plaza": plaza_norm,
-        "source_url": SOURCE_URL,
-        "cached": False,
-        "fallback": True,
-        **({"warning": "browser_fallback_used"} if used_browser else {})
-    }
-
-@internal.post("/oracle/export")
-async def oracle_export_internal(plaza: str = Query("rosario"), only_base: int = Query(1)):
-    # Reusa el exportador existente
-    return export_oracle(plaza=plaza, only_base=only_base)
-
-@internal.post("/cache/publish")
-async def cache_publish_internal():
-    """
-    Stub para orquestación (n8n). Reemplazar por publisher real (ej. push a GitHub Pages/CDN).
-    """
-    return {"ok": True, "published": True}
-
-@internal.get("/tipo_cambio")
-async def tipo_cambio_internal(source: str = Query("bna")):
-    """
-    Este proyecto no implementa tipo de cambio; se deja explícito para evitar confusiones.
-    """
-    return JSONResponse({"ok": False, "detail": "tipo_cambio no implementado en este servicio"}, status_code=501)
-
-# Monta el router
-app.include_router(internal, prefix="/internal")
+    
 
 # ---------------------------
 # Main
